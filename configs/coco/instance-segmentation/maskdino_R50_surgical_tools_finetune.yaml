@@ -1,0 +1,23 @@
+_BASE_: maskdino_R50_bs16_50ep_3s.yaml
+MODEL:
+  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
+  SEM_SEG_HEAD:
+    NUM_CLASSES: 1
+DATASETS:
+  TRAIN: ("surgical_tools_train",)
+  TEST: ("surgical_tools_val",)
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+# NOTE: this SOLVER schedule is sized for a short local try-out only (~1597
+# train images, single 8GB GPU) to confirm the pipeline runs end-to-end on the
+# real dataset. Re-size it (larger IMS_PER_BATCH across GPUs, LR, MAX_ITER)
+# before running a real training job on the multi-GPU cluster.
+SOLVER:
+  IMS_PER_BATCH: 2
+  BASE_LR: 0.00005
+  STEPS: ()
+  MAX_ITER: 200
+  WARMUP_ITERS: 20
+  CHECKPOINT_PERIOD: 200
+TEST:
+  EVAL_PERIOD: 100

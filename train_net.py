@@ -26,7 +26,7 @@ import torch
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
-from detectron2.data import MetadataCatalog, build_detection_train_loader
+from detectron2.data import MetadataCatalog, build_detection_test_loader, build_detection_train_loader
 
 from detectron2.evaluation import (
     CityscapesInstanceEvaluator,
@@ -46,6 +46,7 @@ from detectron2.utils.logger import setup_logger
 from maskdino import (
     COCOInstanceNewBaselineDatasetMapper,
     COCOPanopticNewBaselineDatasetMapper,
+    Hdf5CocoInstanceDatasetMapper,
     InstanceSegEvaluator,
     MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
@@ -214,9 +215,21 @@ class Trainer(DefaultTrainer):
         elif cfg.INPUT.DATASET_MAPPER_NAME == "mask_former_semantic":
             mapper = MaskFormerSemanticDatasetMapper(cfg, True)
             return build_detection_train_loader(cfg, mapper=mapper)
+        # instance segmentation read directly from .hdf5 frames
+        elif cfg.INPUT.DATASET_MAPPER_NAME == "hdf5_coco_instance":
+            mapper = Hdf5CocoInstanceDatasetMapper(cfg, True)
+            return build_detection_train_loader(cfg, mapper=mapper)
         else:
             mapper = None
             return build_detection_train_loader(cfg, mapper=mapper)
+
+    @classmethod
+    def build_test_loader(cls, cfg, dataset_name):
+        # instance segmentation read directly from .hdf5 frames
+        if cfg.INPUT.DATASET_MAPPER_NAME == "hdf5_coco_instance":
+            mapper = Hdf5CocoInstanceDatasetMapper(cfg, False)
+            return build_detection_test_loader(cfg, dataset_name, mapper=mapper)
+        return build_detection_test_loader(cfg, dataset_name)
 
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
