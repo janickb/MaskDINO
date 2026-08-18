@@ -13,6 +13,7 @@ from detectron2.config import configurable
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
 from detectron2.structures import BitMasks
+from sgdata import schema
 
 from .coco_instance_new_baseline_dataset_mapper import build_transform_gen
 
@@ -22,7 +23,7 @@ __all__ = ["Hdf5CocoInstanceDatasetMapper"]
 class Hdf5CocoInstanceDatasetMapper:
     """
     A callable which takes a dataset dict pointing at a BlenderProc-style .hdf5 frame
-    (see datasets/coco_hdf5_utils.py for the `coco_annotations` schema) and maps it
+    (see sgdata.schema for the `coco_annotations` schema) and maps it
     into the format used by MaskDINO for instance segmentation.
 
     Unlike COCOInstanceNewBaselineDatasetMapper, the image ("colors") is read directly
@@ -40,6 +41,7 @@ class Hdf5CocoInstanceDatasetMapper:
         *,
         tfm_gens,
         image_format,
+        min_visibility=0.0,
     ):
         self.tfm_gens = tfm_gens
         logging.getLogger(__name__).info(
@@ -48,6 +50,7 @@ class Hdf5CocoInstanceDatasetMapper:
 
         self.img_format = image_format
         self.is_train = is_train
+        self.min_visibility = min_visibility
 
     @classmethod
     def from_config(cls, cfg, is_train=True):
@@ -62,6 +65,7 @@ class Hdf5CocoInstanceDatasetMapper:
             "is_train": is_train,
             "tfm_gens": tfm_gens,
             "image_format": cfg.INPUT.FORMAT,
+            "min_visibility": cfg.INPUT.MIN_VISIBILITY,
         }
         return ret
 
@@ -69,7 +73,7 @@ class Hdf5CocoInstanceDatasetMapper:
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
 
         with h5py.File(dataset_dict["file_name"], "r") as f:
-            image = f["colors"][()]
+            image = f[schema.COLORS][()]
 
         assert image.ndim == 3 and image.shape[2] == 3, "expected an (H, W, 3) RGB 'colors' array"
         if self.img_format == "BGR":
@@ -90,7 +94,7 @@ class Hdf5CocoInstanceDatasetMapper:
         annos = [
             utils.transform_instance_annotations(obj, transforms, image_shape)
             for obj in dataset_dict.pop("annotations")
-            if obj.get("iscrowd", 0) == 0
+            if obj.get("iscrowd", 0) == 0 and obj.get("visibility_fraction", 1.0) >= self.min_visibility
         ]
         instances = utils.annotations_to_instances(annos, image_shape, mask_format="bitmask")
         if not instances.has("gt_masks"):  # image has no (visible) instances

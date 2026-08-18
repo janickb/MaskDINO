@@ -64,6 +64,10 @@ def build_transform_gen(cfg, is_train):
             min_scale=min_scale, max_scale=max_scale, target_height=image_size, target_width=image_size
         ),
         T.FixedSizeCrop(crop_size=(image_size, image_size)),
+        T.RandomBrightness(0.7, 1.3),
+        T.RandomContrast(0.7, 1.3),
+        T.RandomSaturation(0.8, 1.2),
+        T.RandomLighting(0.9),
     ])
 
     return augmentation

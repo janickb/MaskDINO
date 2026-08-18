@@ -6,11 +6,18 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "cython>=3.2.8",
+    "detectron2",
     "h5py>=3.16.0",
     "opencv-python>=5.0.0.93",
+    "scene-generator",
     "scikit-image>=0.26.0",
     "scipy>=1.18.0",
     "shapely>=2.1.2",
     "submitit>=1.5.4",
+    "tensorboard>=2.21.0",
     "timm>=1.0.28",
 ]
+
+[tool.uv.sources]
+scene-generator = { path = "../scene_generator", editable = true }
+detectron2 = { git = "https://github.com/facebookresearch/detectron2.git" }

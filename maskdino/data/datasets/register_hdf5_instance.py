@@ -6,11 +6,15 @@ import os
 import h5py
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
+from sgdata import schema
 
 _PREDEFINED_SPLITS = {
     # name: (dirname, fraction of files to actually use)
-    "surgical_tools_train": ("surgical_tools/train", 1.0),
-    "surgical_tools_val": ("surgical_tools/val", 0.25),
+    # 15k/5k versatile-tools dataset (scene_generator run 20260808*) - absolute
+    # paths, so os.path.join(root, dirname) below returns them as-is regardless
+    # of DETECTRON2_DATASETS/root.
+    "surgical_tools_train": ("/home/janick.bilang/dev/scene_generator/output/20260808203602_1024x1024_train", 1.0),
+    "surgical_tools_val": ("/home/janick.bilang/dev/scene_generator/output/20260808210656_1024x1024_valid", 0.25),
 }
 
 
@@ -27,8 +31,8 @@ def list_hdf5_dicts(hdf5_dir, fraction=1.0):
     dataset_dicts = []
     for image_id, path in enumerate(paths):
         with h5py.File(path, "r") as f:
-            height, width = f["colors"].shape[:2]
-            annotations = json.loads(f["coco_annotations"][()])
+            height, width = f[schema.COLORS].shape[:2]
+            annotations = json.loads(f[schema.COCO_ANNOTATIONS][()])
         dataset_dicts.append(
             {
                 "file_name": path,

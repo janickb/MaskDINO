@@ -116,6 +116,10 @@ def add_maskdino_config(cfg):
     cfg.INPUT.MIN_SCALE = 0.1
     cfg.INPUT.MAX_SCALE = 2.0
 
+    # drop hdf5 instances whose stamped "visibility_fraction" is below this at
+    # dataset-mapper time (0 = keep all, including instances missing the field)
+    cfg.INPUT.MIN_VISIBILITY = 0.0
+
     # point loss configs
     # Number of points sampled during training for a mask point head.
     cfg.MODEL.MaskDINO.TRAIN_NUM_POINTS = 112 * 112
