@@ -3,6 +3,9 @@
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from Mask2Former https://github.com/facebookresearch/Mask2Former by Feng Li and Hao Zhang.
+# 
+# Modified locally: instance_inference() also attaches query_idx to the returned
+# Instances, for calibration-based instrument classification (see maskdino/classification/). by Janick Bilang
 from typing import Tuple
 
 import torch
@@ -461,6 +464,7 @@ class MaskDINO(nn.Module):
         labels_per_image = labels[topk_indices]
         topk_indices = topk_indices // self.sem_seg_head.num_classes
         mask_pred = mask_pred[topk_indices]
+        query_idx = topk_indices  # which of the num_queries decoder queries each kept instance came from
         # if this is panoptic segmentation, we only keep the "thing" classes
         if self.panoptic_on:
             keep = torch.zeros_like(scores_per_image).bool()
@@ -469,9 +473,11 @@ class MaskDINO(nn.Module):
             scores_per_image = scores_per_image[keep]
             labels_per_image = labels_per_image[keep]
             mask_pred = mask_pred[keep]
+            query_idx = query_idx[keep]
         result = Instances(image_size)
         # mask (before sigmoid)
         result.pred_masks = (mask_pred > 0).float()
+        result.query_idx = query_idx
         # half mask box half pred box
         mask_box_result = mask_box_result[topk_indices]
         if self.panoptic_on:
