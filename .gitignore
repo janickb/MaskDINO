@@ -9,6 +9,7 @@ inference_test_output
 *.diff
 *.jpg
 !/projects/DensePose/doc/images/*.jpg
+*log*
 
 # compilation and distribution
 __pycache__
@@ -51,3 +52,4 @@ _darcs
 /projects/*/datasets
 /models
 /snippet
+runs/*

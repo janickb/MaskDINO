@@ -9,24 +9,16 @@ from detectron2.data import DatasetCatalog, MetadataCatalog
 from sgdata import schema
 
 _PREDEFINED_SPLITS = {
-    # name: (dirname, fraction of files to actually use)
-    # 15k/5k versatile-tools dataset (scene_generator run 20260808*) - absolute
-    # paths, so os.path.join(root, dirname) below returns them as-is regardless
-    # of DETECTRON2_DATASETS/root.
-    "surgical_tools_train": ("/home/janick.bilang/dev/scene_generator/output/20260808203602_1024x1024_train", 1.0),
-    "surgical_tools_val": ("/home/janick.bilang/dev/scene_generator/output/20260808210656_1024x1024_valid", 0.25),
+    # name: dirname
+    # absolute paths, so os.path.join(root, dirname) below returns them as-is regardless
+    # of DETECTRON2_DATASETS/root
+    "train": "/home/janick.bilang/dev/scene_generator/output/20260808203602_1024x1024_train",
+    "val": "/home/janick.bilang/dev/scene_generator/output/20260808210656_1024x1024_valid",
 }
 
 
-def list_hdf5_dicts(hdf5_dir, fraction=1.0):
+def list_hdf5_dicts(hdf5_dir):
     paths = sorted(glob.glob(os.path.join(hdf5_dir, "*.hdf5")))
-    if fraction < 1.0:
-        # Evenly spaced stride so the kept files span the whole directory
-        # (filenames are grouped by simulation run) rather than clustering
-        # at the start. Files on disk are untouched; the rest are just not
-        # read for this split.
-        stride = round(1 / fraction)
-        paths = paths[::stride]
 
     dataset_dicts = []
     for image_id, path in enumerate(paths):
@@ -45,14 +37,33 @@ def list_hdf5_dicts(hdf5_dir, fraction=1.0):
     return dataset_dicts
 
 
-def register_hdf5_instances(name, hdf5_dir, fraction=1.0):
-    DatasetCatalog.register(name, lambda: list_hdf5_dicts(hdf5_dir, fraction))
-    MetadataCatalog.get(name).set(thing_classes=["surgical_tool"], evaluator_type="coco")
+def instrument_classes_from_hdf5(hdf5_dir):
+    """category_id -> obj_name, read straight from any one .hdf5 file's embedded
+    `instrument_classes` key (see sgdata/coco.py's instrument_classes_from_config,
+    written at render time - run sgdata.backfill over older directories that
+    predate this). Every file in a directory carries the same list, so reading one
+    is enough.
+
+    Used directly as the class index (no COCO-JSON-style remap happens in this
+    custom loader): index 0 is background (filtered out of every frame's
+    coco_annotations, never has ground truth), and any category_id with no live
+    config.yaml `objects:` entry at generation time gets a placeholder name since
+    it never spawns in this dataset but still needs to occupy its slot.
+    """
+    sample_path = sorted(glob.glob(os.path.join(hdf5_dir, "*.hdf5")))[0]
+    with h5py.File(sample_path, "r") as f:
+        return json.loads(f[schema.INSTRUMENT_CLASSES][()])
+
+
+def register_hdf5_instances(name, hdf5_dir):
+    DatasetCatalog.register(name, lambda: list_hdf5_dicts(hdf5_dir))
+    thing_classes = instrument_classes_from_hdf5(hdf5_dir)
+    MetadataCatalog.get(name).set(thing_classes=thing_classes, evaluator_type="coco")
 
 
 def register_all_hdf5_instances(root):
-    for key, (dirname, fraction) in _PREDEFINED_SPLITS.items():
-        register_hdf5_instances(key, os.path.join(root, dirname), fraction)
+    for key, dirname in _PREDEFINED_SPLITS.items():
+        register_hdf5_instances(key, os.path.join(root, dirname))
 
 
 _root = os.getenv("DETECTRON2_DATASETS", "datasets")

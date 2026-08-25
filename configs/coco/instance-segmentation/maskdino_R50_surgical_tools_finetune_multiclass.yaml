@@ -1,0 +1,29 @@
+_BASE_: maskdino_R50_bs16_50ep_3s.yaml
+MODEL:
+  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
+  SEM_SEG_HEAD:
+    NUM_CLASSES: 10
+  MaskDINO:
+    NUM_OBJECT_QUERIES: 100
+DATASETS:
+  TRAIN: ("train",)
+  TEST: ("val",)
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  IMAGE_SIZE: 1024
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  MIN_VISIBILITY: 0.0
+
+# Extension of the 90k run in runs/multi_class_v1 (segm/bbox AP still rising
+# at 90k). Resuming on 4 GPUs at 1 img/GPU, LR scaled linearly with batch
+# size (2->4), no LR decay (flat schedule matches the first 90k).
+SOLVER:
+  IMS_PER_BATCH: 4
+  BASE_LR: 0.0002
+  STEPS: ()
+  MAX_ITER: 110000
+  CHECKPOINT_PERIOD: 10000
+TEST:
+  EVAL_PERIOD: 5000
+OUTPUT_DIR: "runs/multi_class_v1"
