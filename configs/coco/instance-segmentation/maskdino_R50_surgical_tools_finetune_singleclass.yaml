@@ -6,8 +6,8 @@ MODEL:
   MaskDINO:
     NUM_OBJECT_QUERIES: 100
 DATASETS:
-  TRAIN: ("surgical_tools_train",)
-  TEST: ("surgical_tools_val",)
+  TRAIN: ("train",)
+  TEST: ("val",)
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"
   IMAGE_SIZE: 1024
@@ -27,4 +27,4 @@ SOLVER:
   CHECKPOINT_PERIOD: 10000
 TEST:
   EVAL_PERIOD: 5000
-OUTPUT_DIR: "output_v2"
+OUTPUT_DIR: "runs/single_class_v1"
