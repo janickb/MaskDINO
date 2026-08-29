@@ -6,10 +6,13 @@
 """
 MaskDINO Training Script based on Mask2Former.
 """
+
 try:
-    from shapely.errors import ShapelyDeprecationWarning
     import warnings
-    warnings.filterwarnings('ignore', category=ShapelyDeprecationWarning)
+
+    from shapely.errors import ShapelyDeprecationWarning
+
+    warnings.filterwarnings("ignore", category=ShapelyDeprecationWarning)
 except:
     pass
 
@@ -17,17 +20,28 @@ import copy
 import itertools
 import logging
 import os
-
+import random
+import weakref
 from collections import OrderedDict
-from typing import Any, Dict, List, Set
+from typing import Any
 
 import torch
-
-import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
-from detectron2.data import MetadataCatalog, build_detection_test_loader, build_detection_train_loader
-
+from detectron2.data import (
+    MetadataCatalog,
+    build_detection_test_loader,
+    build_detection_train_loader,
+)
+from detectron2.engine import (
+    AMPTrainer,
+    DefaultTrainer,
+    SimpleTrainer,
+    create_ddp_model,
+    default_argument_parser,
+    default_setup,
+    launch,
+)
 from detectron2.evaluation import (
     CityscapesInstanceEvaluator,
     CityscapesSemSegEvaluator,
@@ -40,37 +54,27 @@ from detectron2.evaluation import (
 )
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
+from detectron2.utils import comm
 from detectron2.utils.logger import setup_logger
 
 # MaskDINO
 from maskdino import (
     COCOInstanceNewBaselineDatasetMapper,
     COCOPanopticNewBaselineDatasetMapper,
+    DetrDatasetMapper,
     Hdf5CocoInstanceDatasetMapper,
     InstanceSegEvaluator,
     MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
     add_maskdino_config,
-    DetrDatasetMapper,
 )
-import random
-from detectron2.engine import (
-    DefaultTrainer,
-    default_argument_parser,
-    default_setup,
-    hooks,
-    launch,
-    create_ddp_model,
-    AMPTrainer,
-    SimpleTrainer
-)
-import weakref
 
 
 class Trainer(DefaultTrainer):
     """
     Extension of the Trainer class adapted to MaskFormer.
     """
+
     def __init__(self, cfg):
         super(DefaultTrainer, self).__init__()
         logger = logging.getLogger("detectron2")
@@ -92,7 +96,7 @@ class Trainer(DefaultTrainer):
 
         # add model EMA
         kwargs = {
-            'trainer': weakref.proxy(self),
+            "trainer": weakref.proxy(self),
         }
         # kwargs.update(model_ema.may_get_ema_checkpointer(cfg, model)) TODO: release ema training for large models
         self.checkpointer = DetectionCheckpointer(
@@ -140,6 +144,7 @@ class Trainer(DefaultTrainer):
         # instance segmentation
         if evaluator_type == "coco":
             evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
+
         # panoptic segmentation
         if evaluator_type in [
             "coco_panoptic_seg",
@@ -148,50 +153,77 @@ class Trainer(DefaultTrainer):
             "mapillary_vistas_panoptic_seg",
         ]:
             if cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON:
-                evaluator_list.append(COCOPanopticEvaluator(dataset_name, output_folder))
+                evaluator_list.append(
+                    COCOPanopticEvaluator(dataset_name, output_folder)
+                )
         # COCO
-        if evaluator_type == "coco_panoptic_seg" and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON:
+        if (
+            evaluator_type == "coco_panoptic_seg"
+            and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON
+        ):
             evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
-        if evaluator_type == "coco_panoptic_seg" and cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON:
-            evaluator_list.append(SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder))
+        if (
+            evaluator_type == "coco_panoptic_seg"
+            and cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON
+        ):
+            evaluator_list.append(
+                SemSegEvaluator(
+                    dataset_name, distributed=True, output_dir=output_folder
+                )
+            )
         # Mapillary Vistas
-        if evaluator_type == "mapillary_vistas_panoptic_seg" and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON:
-            evaluator_list.append(InstanceSegEvaluator(dataset_name, output_dir=output_folder))
-        if evaluator_type == "mapillary_vistas_panoptic_seg" and cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON:
-            evaluator_list.append(SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder))
+        if (
+            evaluator_type == "mapillary_vistas_panoptic_seg"
+            and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON
+        ):
+            evaluator_list.append(
+                InstanceSegEvaluator(dataset_name, output_dir=output_folder)
+            )
+        if (
+            evaluator_type == "mapillary_vistas_panoptic_seg"
+            and cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON
+        ):
+            evaluator_list.append(
+                SemSegEvaluator(
+                    dataset_name, distributed=True, output_dir=output_folder
+                )
+            )
         # Cityscapes
         if evaluator_type == "cityscapes_instance":
-            assert (
-                torch.cuda.device_count() > comm.get_rank()
-            ), "CityscapesEvaluator currently do not work with multiple machines."
+            assert torch.cuda.device_count() > comm.get_rank(), (
+                "CityscapesEvaluator currently do not work with multiple machines."
+            )
             return CityscapesInstanceEvaluator(dataset_name)
         if evaluator_type == "cityscapes_sem_seg":
-            assert (
-                torch.cuda.device_count() > comm.get_rank()
-            ), "CityscapesEvaluator currently do not work with multiple machines."
+            assert torch.cuda.device_count() > comm.get_rank(), (
+                "CityscapesEvaluator currently do not work with multiple machines."
+            )
             return CityscapesSemSegEvaluator(dataset_name)
         if evaluator_type == "cityscapes_panoptic_seg":
             if cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON:
-                assert (
-                    torch.cuda.device_count() > comm.get_rank()
-                ), "CityscapesEvaluator currently do not work with multiple machines."
+                assert torch.cuda.device_count() > comm.get_rank(), (
+                    "CityscapesEvaluator currently do not work with multiple machines."
+                )
                 evaluator_list.append(CityscapesSemSegEvaluator(dataset_name))
             if cfg.MODEL.MaskDINO.TEST.INSTANCE_ON:
-                assert (
-                    torch.cuda.device_count() > comm.get_rank()
-                ), "CityscapesEvaluator currently do not work with multiple machines."
+                assert torch.cuda.device_count() > comm.get_rank(), (
+                    "CityscapesEvaluator currently do not work with multiple machines."
+                )
                 evaluator_list.append(CityscapesInstanceEvaluator(dataset_name))
         # ADE20K
-        if evaluator_type == "ade20k_panoptic_seg" and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON:
-            evaluator_list.append(InstanceSegEvaluator(dataset_name, output_dir=output_folder))
+        if (
+            evaluator_type == "ade20k_panoptic_seg"
+            and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON
+        ):
+            evaluator_list.append(
+                InstanceSegEvaluator(dataset_name, output_dir=output_folder)
+            )
         # LVIS
         if evaluator_type == "lvis":
             return LVISEvaluator(dataset_name, output_dir=output_folder)
         if len(evaluator_list) == 0:
             raise NotImplementedError(
-                "no Evaluator for the dataset {} with the type {}".format(
-                    dataset_name, evaluator_type
-                )
+                f"no Evaluator for the dataset {dataset_name} with the type {evaluator_type}"
             )
         elif len(evaluator_list) == 1:
             return evaluator_list[0]
@@ -262,8 +294,8 @@ class Trainer(DefaultTrainer):
             torch.nn.LocalResponseNorm,
         )
 
-        params: List[Dict[str, Any]] = []
-        memo: Set[torch.nn.parameter.Parameter] = set()
+        params: list[dict[str, Any]] = []
+        memo: set[torch.nn.parameter.Parameter] = set()
         for module_name, module in model.named_modules():
             for module_param_name, value in module.named_parameters(recurse=False):
                 if not value.requires_grad:
@@ -275,7 +307,9 @@ class Trainer(DefaultTrainer):
 
                 hyperparams = copy.copy(defaults)
                 if "backbone" in module_name:
-                    hyperparams["lr"] = hyperparams["lr"] * cfg.SOLVER.BACKBONE_MULTIPLIER
+                    hyperparams["lr"] = (
+                        hyperparams["lr"] * cfg.SOLVER.BACKBONE_MULTIPLIER
+                    )
                 if (
                     "relative_position_bias_table" in module_param_name
                     or "absolute_pos_embed" in module_param_name
@@ -299,7 +333,9 @@ class Trainer(DefaultTrainer):
 
             class FullModelGradientClippingOptimizer(optim):
                 def step(self, closure=None):
-                    all_params = itertools.chain(*[x["params"] for x in self.param_groups])
+                    all_params = itertools.chain(
+                        *[x["params"] for x in self.param_groups]
+                    )
                     torch.nn.utils.clip_grad_norm_(all_params, clip_norm_val)
                     super().step(closure=closure)
 
@@ -349,22 +385,22 @@ def setup(args):
     cfg.merge_from_list(args.opts)
     cfg.freeze()
     default_setup(cfg, args)
-    setup_logger(output=cfg.OUTPUT_DIR, distributed_rank=comm.get_rank(), name="maskdino")
+    setup_logger(
+        output=cfg.OUTPUT_DIR, distributed_rank=comm.get_rank(), name="maskdino"
+    )
     return cfg
 
 
 def main(args):
     cfg = setup(args)
-    print("Command cfg:", cfg)
+    # print("Command cfg:", cfg)
     if args.eval_only:
         model = Trainer.build_model(cfg)
         DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
         checkpointer = DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR)
-        checkpointer.resume_or_load(
-            cfg.MODEL.WEIGHTS, resume=args.resume
-        )
+        checkpointer.resume_or_load(cfg.MODEL.WEIGHTS, resume=args.resume)
         res = Trainer.test(cfg, model)
         if cfg.TEST.AUG.ENABLED:
             res.update(Trainer.test_with_TTA(cfg, model))
@@ -379,12 +415,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = default_argument_parser()
-    parser.add_argument('--eval_only', action='store_true')
-    parser.add_argument('--EVAL_FLAG', type=int, default=1)
+    parser.add_argument("--eval_only", action="store_true")
+    parser.add_argument("--EVAL_FLAG", type=int, default=1)
     args = parser.parse_args()
     # random port
     port = random.randint(1000, 20000)
-    args.dist_url = 'tcp://127.0.0.1:' + str(port)
+    args.dist_url = "tcp://127.0.0.1:" + str(port)
     print("Command Line Args:", args)
     print("pwd:", os.getcwd())
     launch(
