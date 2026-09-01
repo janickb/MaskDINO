@@ -97,6 +97,16 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.TEST.PANO_TEMPERATURE = 0.06
     # cfg.MODEL.MaskDINO.TEST.EVAL_FLAG = 1
 
+    # Hungarian mask-IoU instance evaluator (maskdino/evaluation/hungarian_instance_evaluation.py).
+    # These knobs are read only by that evaluator; the model's own inference-time score
+    # gating stays OBJECT_MASK_THRESHOLD / TEST.DETECTIONS_PER_IMAGE.
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL = CN()
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED = False        # default off -> existing runs unchanged
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SCORE_THRESH = 0.5     # drop preds below this confidence
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.IOU_THRESH = 0.5       # min mask IoU for a match to be accepted
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.MIN_VISIBILITY = 0.0   # drop GT below this visibility_fraction
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.BOX_PREFILTER = True   # box-IoU prune before exact mask IoU
+
     # Sometimes `backbone.size_divisibility` is set to 0 for some backbone (e.g. ResNet)
     # you can use this config to override
     cfg.MODEL.MaskDINO.SIZE_DIVISIBILITY = 32
