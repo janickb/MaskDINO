@@ -50,6 +50,7 @@ class MaskDINO(nn.Module):
         test_topk_per_image: int,
         data_loader: str,
         pano_temp: float,
+        dedup_per_query: bool = False,
         focus_on_box: bool = False,
         transform_eval: bool = False,
         semantic_ce_loss: bool = False,
@@ -102,6 +103,7 @@ class MaskDINO(nn.Module):
         self.instance_on = instance_on
         self.panoptic_on = panoptic_on
         self.test_topk_per_image = test_topk_per_image
+        self.dedup_per_query = dedup_per_query
 
         self.data_loader = data_loader
         self.focus_on_box = focus_on_box
@@ -208,6 +210,7 @@ class MaskDINO(nn.Module):
             "instance_on": cfg.MODEL.MaskDINO.TEST.INSTANCE_ON,
             "panoptic_on": cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
             "test_topk_per_image": cfg.TEST.DETECTIONS_PER_IMAGE,
+            "dedup_per_query": cfg.MODEL.MaskDINO.TEST.DEDUP_PER_QUERY,
             "data_loader": cfg.INPUT.DATASET_MAPPER_NAME,
             "focus_on_box": cfg.MODEL.MaskDINO.TEST.TEST_FOUCUS_ON_BOX,
             "transform_eval": cfg.MODEL.MaskDINO.TEST.PANO_TRANSFORM_EVAL,
@@ -456,10 +459,22 @@ class MaskDINO(nn.Module):
         # mask_pred is already processed to have the same shape as original input
         image_size = mask_pred.shape[-2:]
         scores = mask_cls.sigmoid()  # [100, 80]
-        labels = torch.arange(self.sem_seg_head.num_classes, device=self.device).unsqueeze(0).repeat(self.num_queries, 1).flatten(0, 1)
-        scores_per_image, topk_indices = scores.flatten(0, 1).topk(self.test_topk_per_image, sorted=False)  # select 100
-        labels_per_image = labels[topk_indices]
-        topk_indices = topk_indices // self.sem_seg_head.num_classes
+
+        if self.dedup_per_query:
+            # One prediction per query: collapse each query to its single
+            # best-scoring class before ranking, instead of ranking every
+            # (query, class) cell - sigmoid classes aren't mutually exclusive, so
+            # the latter can emit the SAME query's mask twice under two labels.
+            scores_per_image, labels_per_image = scores.max(dim=1)
+            k = min(self.test_topk_per_image, self.num_queries)
+            scores_per_image, topk_indices = scores_per_image.topk(k, sorted=False)
+            labels_per_image = labels_per_image[topk_indices]
+        else:
+            labels = torch.arange(self.sem_seg_head.num_classes, device=self.device).unsqueeze(0).repeat(self.num_queries, 1).flatten(0, 1)
+            scores_per_image, topk_indices = scores.flatten(0, 1).topk(self.test_topk_per_image, sorted=False)  # select 100
+            labels_per_image = labels[topk_indices]
+            topk_indices = topk_indices // self.sem_seg_head.num_classes
+
         mask_pred = mask_pred[topk_indices]
         # if this is panoptic segmentation, we only keep the "thing" classes
         if self.panoptic_on:

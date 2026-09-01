@@ -6,6 +6,7 @@ MODEL:
   MaskDINO:
     NUM_OBJECT_QUERIES: 100
     TEST:
+      DEDUP_PER_QUERY: True
       HUNGARIAN_EVAL:
         ENABLED: True
 DATASETS:

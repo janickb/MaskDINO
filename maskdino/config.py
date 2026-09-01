@@ -97,6 +97,15 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.TEST.PANO_TEMPERATURE = 0.06
     # cfg.MODEL.MaskDINO.TEST.EVAL_FLAG = 1
 
+    # instance_inference()'s query->prediction selection. Default (False) matches
+    # upstream Mask2Former/MaskDINO: top-k over every (query, class) sigmoid score
+    # cell, so one query can supply multiple output entries (same mask, different
+    # labels) if it scores above cutoff for more than one class. True collapses each
+    # query to its single best class first, so every query contributes at most one
+    # prediction - correct for a task where each object is single-class (see
+    # hungarian_evaluator_code_review.md point 3).
+    cfg.MODEL.MaskDINO.TEST.DEDUP_PER_QUERY = False
+
     # Hungarian mask-IoU instance evaluator (maskdino/evaluation/hungarian_instance_evaluation.py).
     # These knobs are read only by that evaluator; the model's own inference-time score
     # gating stays OBJECT_MASK_THRESHOLD / TEST.DETECTIONS_PER_IMAGE.
