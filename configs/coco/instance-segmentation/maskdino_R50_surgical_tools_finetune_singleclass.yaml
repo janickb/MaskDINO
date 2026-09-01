@@ -5,6 +5,9 @@ MODEL:
     NUM_CLASSES: 1
   MaskDINO:
     NUM_OBJECT_QUERIES: 100
+    TEST:
+      HUNGARIAN_EVAL:
+        ENABLED: True
 DATASETS:
   TRAIN: ("train",)
   TEST: ("val",)
