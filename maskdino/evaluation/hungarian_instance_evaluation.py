@@ -2,11 +2,29 @@
 # Hungarian (optimal bipartite) mask-IoU instance evaluator.
 #
 # A single-operating-point diagnostic that complements COCOEvaluator: at a fixed
-# confidence threshold, per rendered frame, how many instruments were missed and how
-# many were misclassified. Predicted and ground-truth instance masks are matched
-# per image by exact mask IoU via scipy.optimize.linear_sum_assignment on cost = -IoU
-# (class-agnostic); a forced match whose IoU is below IOU_THRESH is rejected, so its
-# prediction becomes a false positive and its GT counts as "missed".
+# confidence threshold (SCORE_THRESH), per rendered frame, how many instruments were
+# missed (false negatives), misclassified, or hallucinated (false positives). Predicted
+# and ground-truth instance masks are matched per image by exact mask IoU (classagnostic
+# - labels ignored) via a Hungarian assignment (scipy.optimize.linear_sum_assignment)
+# whose objective maximizes the NUMBER of pairs with IoU >= IOU_THRESH first, then total
+# IoU as a tie-break (see hungarian_match). A matched pair below IOU_THRESH is rejected:
+# its prediction becomes a false positive and its GT a false negative.
+#
+# METRIC NAMESPACES (all under the "instance_matching" result key):
+#   * classagnostic_{precision,recall,f1} - matching ignores labels entirely, so a
+#     well-localized prediction with the WRONG label is neither a false positive nor a
+#     false negative here - it is simply a match. The counts `false_positives`
+#     (predictions overlapping no GT) and `false_negatives` (GT with no accepted match)
+#     are classagnostic too; they carry no prefix because there is no classaware count
+#     counterpart.
+#   * classaware_{precision,recall,f1} - standard detection semantics: a misclassified
+#     match counts as BOTH a false positive and a false negative.
+#   * `misclassified` - its own count, independent of both namespaces: an accepted
+#     (mask-matched) pair whose label is wrong. classagnostic_* ignores it completely;
+#     classaware_* folds it into both the false-positive and false-negative terms.
+#   * Suffixes: *_total (summed over the whole eval set), *_per_image_{mean,median,max},
+#     and normalized rates with an explicit denominator - false_negatives_per_gt,
+#     false_positives_per_pred, misclassified_per_match.
 #
 # Config: cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.{ENABLED,SCORE_THRESH,IOU_THRESH,
 #         MIN_VISIBILITY,BOX_PREFILTER}  (see maskdino/config.py)
@@ -236,19 +254,21 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             acc_gt = col_ind[accepted]
             acc_iou = matched_iou[accepted]
 
-            num_matched = int(accepted.sum())
-            num_missed = m - num_matched
-            num_false_pos = n - num_matched
+            # num_mask_matched: prediction whose mask IoU with a GT was accepted, any
+            # label. num_correct_class: of those, the ones whose label is also right.
+            num_mask_matched = int(accepted.sum())
+            num_false_neg = m - num_mask_matched
+            num_false_pos = n - num_mask_matched
 
-            if self._check_classes and num_matched:
+            if self._check_classes and num_mask_matched:
                 mis = pred_classes[acc_pred] != gt_classes[acc_gt]
             else:
-                mis = np.zeros((num_matched,), dtype=bool)
+                mis = np.zeros((num_mask_matched,), dtype=bool)
             num_misclassified = int(mis.sum())
-            num_correct = num_matched - num_misclassified
+            num_correct_class = num_mask_matched - num_misclassified
 
             matched_gt_set = set(acc_gt.tolist())
-            missed_gt_classes = [
+            false_neg_gt_classes = [
                 int(gt_classes[j]) for j in range(m) if j not in matched_gt_set
             ]
             matched_pred_set = set(acc_pred.tolist())
@@ -262,9 +282,9 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                     "file_name": inp.get("file_name", ""),
                     "num_gt": m,
                     "num_pred": n,
-                    "num_matched": num_matched,
-                    "num_correct": num_correct,
-                    "num_missed": num_missed,
+                    "num_mask_matched": num_mask_matched,
+                    "num_correct_class": num_correct_class,
+                    "num_false_neg": num_false_neg,
                     "num_false_pos": num_false_pos,
                     "num_misclassified": num_misclassified,
                     "sum_iou_matched": float(acc_iou.sum()),
@@ -272,7 +292,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                     "gt_count_per_class": dict(
                         Counter(int(c) for c in gt_classes.tolist())
                     ),
-                    "missed_per_class": dict(Counter(missed_gt_classes)),
+                    "false_neg_per_class": dict(Counter(false_neg_gt_classes)),
                     "false_pos_per_class": dict(Counter(fp_pred_classes)),
                     "misclassified_per_class": dict(
                         Counter(int(gt_classes[j]) for j in acc_gt[mis].tolist())
