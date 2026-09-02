@@ -6,6 +6,7 @@ MODEL:
   MaskDINO:
     NUM_OBJECT_QUERIES: 100
     TEST:
+      NMS_IOU: 0.5
       HUNGARIAN_EVAL:
         ENABLED: True
 DATASETS:
@@ -17,6 +18,8 @@ INPUT:
   MIN_SCALE: 0.8
   MAX_SCALE: 1.2
   MIN_VISIBILITY: 0.0
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024
 
 # Extension of the 90k run in runs/multi_class_v1 (segm/bbox AP still rising
 # at 90k). Resuming on 4 GPUs at 1 img/GPU, LR scaled linearly with batch
