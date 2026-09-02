@@ -27,7 +27,7 @@
 #     false_positives_per_pred, misclassified_per_match.
 #
 # Config: cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.{ENABLED,SCORE_THRESH,IOU_THRESH,
-#         MIN_VISIBILITY,BOX_PREFILTER}  (see maskdino/config.py)
+#         BOX_PREFILTER}  (see maskdino/config.py)
 #
 # NOTE: this assumes GT masks and predicted masks describe the SAME thing (both modal =
 # visible pixels only, or both amodal). The validation GT is modal
@@ -155,7 +155,9 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         he = cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
         self._score_thresh = float(he.SCORE_THRESH)
         self._iou_thresh = float(he.IOU_THRESH)
-        self._min_visibility = float(he.MIN_VISIBILITY)
+        # Always the training-time GT filter, never a separate knob: recall must be
+        # measured against the same GT distribution the model was trained on.
+        self._min_visibility = float(cfg.INPUT.MIN_VISIBILITY)
         self._box_prefilter = bool(he.BOX_PREFILTER)
 
         self._num_classes = int(cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES)
@@ -186,6 +188,19 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         self._records = []
 
     # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _pr(tp, fp, fn):
+        """Precision / recall / f1 from raw counts (safe on zero denominators)."""
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        f1 = 2 * precision * recall / max(precision + recall, 1e-12)
+        return precision, recall, f1
+
+    def _class_name(self, cid):
+        """Class id -> filesystem-safe thing-class name, falling back to str(cid)."""
+        name = self._thing_classes[cid] if cid < len(self._thing_classes) else str(cid)
+        return str(name).replace("/", "_")
 
     def _load_gt_masks(self, anns, gt_h, gt_w, image_id):
         """Decode GT annotations -> (BoolTensor[M, gt_h, gt_w], np.int64[M] category ids)."""
@@ -307,21 +322,6 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
     # ------------------------------------------------------------------ evaluate
 
     def evaluate(self):
-
-        def _pr(tp, fp, fn):
-            precision = tp / max(tp + fp, 1)
-            recall = tp / max(tp + fn, 1)
-            f1 = 2 * precision * recall / max(precision + recall, 1e-12)
-            return precision, recall, f1
-
-        def _cname(cid):
-            name = (
-                self._thing_classes[cid]
-                if 0 <= cid < len(self._thing_classes)
-                else str(cid)
-            )
-            return str(name).replace("/", "_")
-
         if self._distributed:
             comm.synchronize()
             records = comm.gather(self._records, dst=0)
@@ -346,11 +346,11 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         sum_iou = sum(r["sum_iou_matched"] for r in records)
 
         # classagnostic (localization only)
-        classagnostic_precision, classagnostic_recall, classagnostic_f1 = _pr(
+        classagnostic_precision, classagnostic_recall, classagnostic_f1 = self._pr(
             num_mask_matched, false_pos, false_neg
         )
         # classaware: a misclassified match is both a false positive and a false negative
-        classaware_precision, classaware_recall, classaware_f1 = _pr(
+        classaware_precision, classaware_recall, classaware_f1 = self._pr(
             num_correct_class, false_pos + misclassified, false_neg + misclassified
         )
 
@@ -388,7 +388,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         for cid in sorted(gt_count):
             if cid == 0:  # background slot, never a real instance
                 continue
-            name = _cname(cid)
+            name = self._class_name(cid)
             gtc = max(gt_count.get(cid, 0), 1)
             matched_c = gt_count.get(cid, 0) - false_neg_pc.get(cid, 0)  # matched
             correct_c = matched_c - mis_pc.get(cid, 0)  # matched AND correctly labeled
@@ -480,11 +480,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         max_id = max(max_id, len(self._thing_classes) - 1, self._num_classes - 1)
         c = max_id + 1
 
-        def _name(i):
-            n = self._thing_classes[i] if i < len(self._thing_classes) else str(i)
-            return str(n).replace("/", "_")
-
-        cls_names = [_name(i) for i in range(c)]
+        cls_names = [self._class_name(i) for i in range(c)]
         # Extended confusion matrix: an extra "(false negative)" column (GT with no
         # accepted match) and an extra "(false positive)" row (predictions that matched
         # nothing). Then row sum = total GT of that class, column sum = total predictions
