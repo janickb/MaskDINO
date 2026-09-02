@@ -314,6 +314,14 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             f1 = 2 * precision * recall / max(precision + recall, 1e-12)
             return precision, recall, f1
 
+        def _cname(cid):
+            name = (
+                self._thing_classes[cid]
+                if 0 <= cid < len(self._thing_classes)
+                else str(cid)
+            )
+            return str(name).replace("/", "_")
+
         if self._distributed:
             comm.synchronize()
             records = comm.gather(self._records, dst=0)
@@ -330,19 +338,25 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         n_images = len(records)
         num_gt = sum(r["num_gt"] for r in records)
         num_pred = sum(r["num_pred"] for r in records)
-        num_matched = sum(r["num_matched"] for r in records)
-        num_correct = sum(r["num_correct"] for r in records)
-        missed = sum(r["num_missed"] for r in records)
+        num_mask_matched = sum(r["num_mask_matched"] for r in records)
+        num_correct_class = sum(r["num_correct_class"] for r in records)
+        false_neg = sum(r["num_false_neg"] for r in records)
         false_pos = sum(r["num_false_pos"] for r in records)
         misclassified = sum(r["num_misclassified"] for r in records)
         sum_iou = sum(r["sum_iou_matched"] for r in records)
 
-        precision, recall, f1 = _pr(num_matched, false_pos, missed)
-        precision_ca, recall_ca, f1_ca = _pr(
-            num_correct, false_pos + misclassified, missed + misclassified
+        # classagnostic (localization only)
+        classagnostic_precision, classagnostic_recall, classagnostic_f1 = _pr(
+            num_mask_matched, false_pos, false_neg
+        )
+        # classaware: a misclassified match is both a false positive and a false negative
+        classaware_precision, classaware_recall, classaware_f1 = _pr(
+            num_correct_class, false_pos + misclassified, false_neg + misclassified
         )
 
-        missed_arr = np.asarray([r["num_missed"] for r in records], dtype=np.float64)
+        false_neg_arr = np.asarray(
+            [r["num_false_neg"] for r in records], dtype=np.float64
+        )
         mis_arr = np.asarray(
             [r["num_misclassified"] for r in records], dtype=np.float64
         )
@@ -350,94 +364,84 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
 
         # per-class aggregation, keyed by integer class id
         gt_count = Counter()
-        missed_pc = Counter()
-        fp_pc = Counter()
+        false_neg_pc = Counter()
+        false_pos_pc = Counter()
         mis_pc = Counter()
         confusion = Counter()  # (gt_id, pred_id) -> count
         for r in records:
             for k, v in r["gt_count_per_class"].items():
                 gt_count[int(k)] += v
-            for k, v in r["missed_per_class"].items():
-                missed_pc[int(k)] += v
+            for k, v in r["false_neg_per_class"].items():
+                false_neg_pc[int(k)] += v
             for k, v in r["false_pos_per_class"].items():
-                fp_pc[int(k)] += v
+                false_pos_pc[int(k)] += v
             for k, v in r["misclassified_per_class"].items():
                 mis_pc[int(k)] += v
             for g, p in r["confusion_pairs"]:
                 confusion[(int(g), int(p))] += 1
 
-        def _cname(cid):
-            name = (
-                self._thing_classes[cid]
-                if 0 <= cid < len(self._thing_classes)
-                else str(cid)
-            )
-            return str(name).replace("/", "_")
-
-        missed_per_class = {}
-        missed_rate_per_class = {}
-        recall_per_class = {}  # class-agnostic: breakdown of headline `recall`
-        recall_classaware_per_class = {}  # class-aware: breakdown of `recall_classaware`
+        false_negatives_per_class = {}
+        false_negatives_rate_per_class = {}
+        classagnostic_recall_per_class = {}  # breakdown of headline `classagnostic_recall`
+        classaware_recall_per_class = {}  # breakdown of `classaware_recall`
         misclassified_per_class = {}
         for cid in sorted(gt_count):
             if cid == 0:  # background slot, never a real instance
                 continue
             name = _cname(cid)
-            gtc = max(gt_count[cid], 1)
-            matched_c = gt_count[cid] - missed_pc.get(
-                cid, 0
-            )  # accepted mask matches, any label
+            gtc = max(gt_count.get(cid, 0), 1)
+            matched_c = gt_count.get(cid, 0) - false_neg_pc.get(cid, 0)  # matched
             correct_c = matched_c - mis_pc.get(cid, 0)  # matched AND correctly labeled
-            missed_per_class[name] = float(missed_pc.get(cid, 0))
-            missed_rate_per_class[name] = float(missed_pc.get(cid, 0)) / gtc
-            recall_per_class[name] = float(matched_c) / gtc
-            recall_classaware_per_class[name] = float(correct_c) / gtc
+            false_negatives_per_class[name] = float(false_neg_pc.get(cid, 0))
+            false_negatives_rate_per_class[name] = float(false_neg_pc.get(cid, 0)) / gtc
+            classagnostic_recall_per_class[name] = float(matched_c) / gtc
+            classaware_recall_per_class[name] = float(correct_c) / gtc
             if self._check_classes:
                 misclassified_per_class[name] = float(mis_pc.get(cid, 0))
 
         if self._output_dir and comm.is_main_process():
-            self._write_artifacts(records, confusion, missed_pc, fp_pc)
+            self._write_artifacts(records, confusion, false_neg_pc, false_pos_pc)
 
         res = {
-            # precision / recall / f1 -- class-agnostic (localization)
-            "precision": float(precision),
-            "recall": float(recall),
-            "f1": float(f1),
-            # precision / recall / f1 -- class-aware (detection + classification)
-            "precision_classaware": float(precision_ca),
-            "recall_classaware": float(recall_ca),
-            "f1_classaware": float(f1_ca),
-            # missed
-            "missed_total": float(missed),
-            "missed_per_image_mean": float(missed_arr.mean()),
-            "missed_per_image_median": float(np.median(missed_arr)),
-            "missed_per_image_max": float(missed_arr.max()),
-            "missed_rate": float(missed) / max(num_gt, 1),
-            # misclassified
+            # precision / recall / f1 -- classagnostic (localization)
+            "classagnostic_precision": float(classagnostic_precision),
+            "classagnostic_recall": float(classagnostic_recall),
+            "classagnostic_f1": float(classagnostic_f1),
+            # precision / recall / f1 -- classaware (detection + classification)
+            "classaware_precision": float(classaware_precision),
+            "classaware_recall": float(classaware_recall),
+            "classaware_f1": float(classaware_f1),
+            # false negatives (classagnostic: GT with no accepted match, any label)
+            "false_negatives_total": float(false_neg),
+            "false_negatives_per_image_mean": float(false_neg_arr.mean()),
+            "false_negatives_per_image_median": float(np.median(false_neg_arr)),
+            "false_negatives_per_image_max": float(false_neg_arr.max()),
+            "false_negatives_per_gt": float(false_neg) / max(num_gt, 1),
+            # misclassified (matched mask, wrong label)
             "misclassified_total": float(misclassified),
             "misclassified_per_image_mean": float(mis_arr.mean()),
-            "misclassified_rate": float(misclassified) / max(num_matched, 1),
-            # false positives
+            "misclassified_per_match": float(misclassified) / max(num_mask_matched, 1),
+            # false positives (classagnostic: predictions overlapping no GT)
             "false_positives_total": float(false_pos),
             "false_positives_per_image_mean": float(fp_arr.mean()),
-            "false_positive_rate": float(false_pos) / max(num_pred, 1),
+            "false_positives_per_pred": float(false_pos) / max(num_pred, 1),
             # quality / counts
-            "mean_iou_matched": float(sum_iou) / max(num_matched, 1),
+            "mean_iou_matched": float(sum_iou) / max(num_mask_matched, 1),
             "num_images": float(n_images),
             "num_gt_total": float(num_gt),
             "num_pred_total": float(num_pred),
-            "num_matched_total": float(num_matched),
-            "num_correct_total": float(num_correct),
+            "num_mask_matched_total": float(num_mask_matched),
+            "num_correct_class_total": float(num_correct_class),
         }
         # Per-class breakdowns are flattened into `res` with "<group>/<class>" keys rather
         # than kept as nested dicts: detectron2's print_csv_format walks res one level
         # deep and formats every value as a float, so a nested dict would crash it (it
         # still flattens correctly to TensorBoard tags via flatten_results_dict).
         per_class_groups = {
-            "missed_per_class": missed_per_class,
-            "missed_rate_per_class": missed_rate_per_class,
-            "recall_per_class": recall_per_class,
-            "recall_classaware_per_class": recall_classaware_per_class,
+            "false_negatives_per_class": false_negatives_per_class,
+            "false_negatives_rate_per_class": false_negatives_rate_per_class,
+            "classagnostic_recall_per_class": classagnostic_recall_per_class,
+            "classaware_recall_per_class": classaware_recall_per_class,
         }
         if self._check_classes:
             per_class_groups["misclassified_per_class"] = misclassified_per_class
@@ -447,31 +451,31 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
 
         self._logger.info(
             "[HungarianInstanceEvaluator] images=%d gt=%d pred=%d matched=%d correct=%d "
-            "missed=%d misclassified=%d fp=%d | precision=%.4f recall=%.4f f1=%.4f | "
+            "fn=%d misclassified=%d fp=%d | precision=%.4f recall=%.4f f1=%.4f | "
             "mean_iou_matched=%.4f",
             n_images,
             num_gt,
             num_pred,
-            num_matched,
-            num_correct,
-            missed,
+            num_mask_matched,
+            num_correct_class,
+            false_neg,
             misclassified,
             false_pos,
-            precision,
-            recall,
-            f1,
+            classagnostic_precision,
+            classagnostic_recall,
+            classagnostic_f1,
             res["mean_iou_matched"],
         )
         return OrderedDict({"instance_matching": res})
 
     # ------------------------------------------------------------------ artifacts
 
-    def _write_artifacts(self, records, confusion, missed_pc, fp_pc):
+    def _write_artifacts(self, records, confusion, false_neg_pc, false_pos_pc):
         os.makedirs(self._output_dir, exist_ok=True)
         max_id = 0
         for g, p in confusion:
             max_id = max(max_id, g, p)
-        for cid in list(missed_pc) + list(fp_pc):
+        for cid in list(false_neg_pc) + list(false_pos_pc):
             max_id = max(max_id, cid)
         max_id = max(max_id, len(self._thing_classes) - 1, self._num_classes - 1)
         c = max_id + 1
@@ -481,27 +485,27 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             return str(n).replace("/", "_")
 
         cls_names = [_name(i) for i in range(c)]
-        # Extended confusion matrix: an extra "(missed)" column (GT with no accepted
-        # match) and an extra "(false positive)" row (predictions that matched nothing).
-        # Then row sum = total GT of that class, column sum = total predictions of that
-        # class (score >= SCORE_THRESH). The C x C block is accepted matches
+        # Extended confusion matrix: an extra "(false negative)" column (GT with no
+        # accepted match) and an extra "(false positive)" row (predictions that matched
+        # nothing). Then row sum = total GT of that class, column sum = total predictions
+        # of that class (score >= SCORE_THRESH). The C x C block is accepted matches
         # (diagonal = correct, off-diagonal = misclassified).
-        col_names = cls_names + ["(missed)"]
+        col_names = cls_names + ["(false negative)"]
         row_names = cls_names + ["(false positive)"]
         mat = np.zeros((c + 1, c + 1), dtype=np.int64)  # rows = GT, cols = predicted
         for (g, p), cnt in confusion.items():
             mat[g, p] += cnt
-        for cid, cnt in missed_pc.items():
+        for cid, cnt in false_neg_pc.items():
             mat[cid, c] += cnt
-        for cid, cnt in fp_pc.items():
+        for cid, cnt in false_pos_pc.items():
             mat[c, cid] += cnt
 
         # Row-normalized view: every row is a distribution over the columns, summing to 1.
         #   real-class row  -> divided by that class's GT total; cell = "fraction of
-        #     forcep03 GT that ended up here". Diagonal = per-class class-aware recall,
-        #     "(missed)" column = per-class miss rate.
+        #     forcep03 GT that ended up here". Diagonal = per-class classaware recall,
+        #     "(false negative)" column = per-class false-negative rate.
         #   "(false positive)" row -> divided by the total false-positive count; cell =
-        #     "fraction of all spurious predictions that carry this label".
+        #     "fraction of all false-positive predictions that carry this label".
         row_denom = np.maximum(mat.sum(axis=1), 1).astype(np.float64)
         norm = mat / row_denom[:, None]
 
@@ -529,9 +533,9 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             "file_name",
             "num_gt",
             "num_pred",
-            "num_matched",
-            "num_correct",
-            "num_missed",
+            "num_mask_matched",
+            "num_correct_class",
+            "num_false_neg",
             "num_false_pos",
             "num_misclassified",
             "sum_iou_matched",
