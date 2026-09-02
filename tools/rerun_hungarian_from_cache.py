@@ -50,7 +50,8 @@ def main():
     if args.iou_thresh is not None:
         he.IOU_THRESH = args.iou_thresh
     if args.min_visibility is not None:
-        he.MIN_VISIBILITY = args.min_visibility
+        # the evaluator reads the GT visibility filter from INPUT.MIN_VISIBILITY
+        cfg.INPUT.MIN_VISIBILITY = args.min_visibility
     cfg.freeze()
 
     dataset = args.dataset or cfg.DATASETS.TEST[0]
