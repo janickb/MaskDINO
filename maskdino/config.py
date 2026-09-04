@@ -97,6 +97,24 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.TEST.PANO_TEMPERATURE = 0.06
     # cfg.MODEL.MaskDINO.TEST.EVAL_FLAG = 1
 
+    # Per-class mask-IoU NMS in instance_inference(): among predictions sharing the
+    # SAME predicted label, greedily drop the lower-scoring one whenever mask IoU
+    # exceeds this. Predictions with different labels are never compared, so two
+    # genuinely distinct overlapping instruments are unaffected. 0 disables (default,
+    # matches upstream - no NMS).
+    cfg.MODEL.MaskDINO.TEST.NMS_IOU = 0.0
+
+    # Hungarian mask-IoU instance evaluator (maskdino/evaluation/hungarian_instance_evaluation.py).
+    # These knobs are read only by that evaluator; the model's own inference-time score
+    # gating stays OBJECT_MASK_THRESHOLD / TEST.DETECTIONS_PER_IMAGE.
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL = CN()
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED = False        # default off -> existing runs unchanged
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SCORE_THRESH = 0.5     # drop preds below this confidence
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.IOU_THRESH = 0.5       # min mask IoU for a match to be accepted
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.BOX_PREFILTER = True   # box-IoU prune before exact mask IoU
+    # GT visibility filtering is NOT a separate knob: the evaluator always reuses
+    # INPUT.MIN_VISIBILITY so "recall" is measured against the same GT the model trained on.
+
     # Sometimes `backbone.size_divisibility` is set to 0 for some backbone (e.g. ResNet)
     # you can use this config to override
     cfg.MODEL.MaskDINO.SIZE_DIVISIBILITY = 32

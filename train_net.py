@@ -144,6 +144,16 @@ class Trainer(DefaultTrainer):
         # instance segmentation
         if evaluator_type == "coco":
             evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
+            if cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED:
+                from maskdino.evaluation.hungarian_instance_evaluation import (
+                    HungarianInstanceEvaluator,
+                )
+
+                evaluator_list.append(
+                    HungarianInstanceEvaluator(
+                        dataset_name, cfg, distributed=True, output_dir=output_folder
+                    )
+                )
 
         # panoptic segmentation
         if evaluator_type in [

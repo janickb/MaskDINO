@@ -22,6 +22,44 @@ from .modeling.matcher import HungarianMatcher
 from .utils import box_ops
 
 
+def class_aware_mask_nms(masks, scores, labels, iou_thresh):
+    """Greedy NMS restricted to same-label pairs: among predictions sharing a label,
+    suppress the lower-scoring one whenever mask IoU exceeds iou_thresh. Predictions
+    with different labels are never compared against each other, so two genuinely
+    distinct overlapping instruments (e.g. two different tools in a pile) can't
+    suppress one another - only near-duplicate detections of the SAME object under
+    the SAME label are removed. See MODEL.MaskDINO.TEST.NMS_IOU (config.py).
+
+    Args:
+        masks: (K, H, W) bool.
+        scores: (K,) float.
+        labels: (K,) int.
+    Returns:
+        (K,) bool keep mask.
+    """
+    k = masks.shape[0]
+    keep = torch.ones(k, dtype=torch.bool, device=masks.device)
+    if k <= 1:
+        return keep
+
+    flat = masks.reshape(k, -1).float()
+    inter = flat @ flat.t()
+    area = flat.sum(dim=1)
+    union = area[:, None] + area[None, :] - inter
+    iou = inter / union.clamp_min(1e-6)
+
+    order = torch.argsort(scores, descending=True).tolist()
+    for a in range(k):
+        i = order[a]
+        if not keep[i]:
+            continue
+        for b in range(a + 1, k):
+            j = order[b]
+            if keep[j] and labels[i] == labels[j] and iou[i, j] > iou_thresh:
+                keep[j] = False
+    return keep
+
+
 @META_ARCH_REGISTRY.register()
 class MaskDINO(nn.Module):
     """
@@ -50,6 +88,7 @@ class MaskDINO(nn.Module):
         test_topk_per_image: int,
         data_loader: str,
         pano_temp: float,
+        nms_iou: float = 0.0,
         focus_on_box: bool = False,
         transform_eval: bool = False,
         semantic_ce_loss: bool = False,
@@ -102,6 +141,7 @@ class MaskDINO(nn.Module):
         self.instance_on = instance_on
         self.panoptic_on = panoptic_on
         self.test_topk_per_image = test_topk_per_image
+        self.nms_iou = nms_iou
 
         self.data_loader = data_loader
         self.focus_on_box = focus_on_box
@@ -208,6 +248,7 @@ class MaskDINO(nn.Module):
             "instance_on": cfg.MODEL.MaskDINO.TEST.INSTANCE_ON,
             "panoptic_on": cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
             "test_topk_per_image": cfg.TEST.DETECTIONS_PER_IMAGE,
+            "nms_iou": cfg.MODEL.MaskDINO.TEST.NMS_IOU,
             "data_loader": cfg.INPUT.DATASET_MAPPER_NAME,
             "focus_on_box": cfg.MODEL.MaskDINO.TEST.TEST_FOUCUS_ON_BOX,
             "transform_eval": cfg.MODEL.MaskDINO.TEST.PANO_TRANSFORM_EVAL,
@@ -486,6 +527,13 @@ class MaskDINO(nn.Module):
             mask_scores_per_image = 1.0
         result.scores = scores_per_image * mask_scores_per_image
         result.pred_classes = labels_per_image
+
+        if self.nms_iou > 0 and len(result) > 1:
+            keep = class_aware_mask_nms(
+                result.pred_masks.bool(), result.scores, result.pred_classes, self.nms_iou
+            )
+            result = result[keep]
+
         return result
 
     def box_postprocess(self, out_bbox, img_h, img_w):
