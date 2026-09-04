@@ -77,8 +77,19 @@ class Hdf5CocoInstanceDatasetMapper:
     def __call__(self, dataset_dict):
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
 
-        with h5py.File(dataset_dict["file_name"], "r") as f:
-            image = f[schema.COLORS][()]
+        try:
+            with h5py.File(dataset_dict["file_name"], "r") as f:
+                image = f[schema.COLORS][()]
+        except (OSError, KeyError) as exc:
+            # Frame evicted from a live pool between listing and now, or a torn
+            # read. Returning None makes MapDataset.__getitem__ retry with another
+            # sample instead of crashing the loader.
+            logging.getLogger(__name__).warning(
+                "[Hdf5CocoInstanceDatasetMapper] dropping unreadable frame %s: %s",
+                dataset_dict["file_name"],
+                exc,
+            )
+            return None
 
         assert image.ndim == 3 and image.shape[2] == 3, (
             "expected an (H, W, 3) RGB 'colors' array"
