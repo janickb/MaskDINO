@@ -259,8 +259,44 @@ class Trainer(DefaultTrainer):
             return build_detection_train_loader(cfg, mapper=mapper)
         # instance segmentation read directly from .hdf5 frames
         elif cfg.INPUT.DATASET_MAPPER_NAME == "hdf5_coco_instance":
+            import time as _t
+
+            from detectron2.data.build import get_detection_dataset_dicts
+            from detectron2.data.samplers import TrainingSampler
+
+            print("[DEBUG] building Hdf5CocoInstanceDatasetMapper", flush=True)
             mapper = Hdf5CocoInstanceDatasetMapper(cfg, True)
-            return build_detection_train_loader(cfg, mapper=mapper)
+            print("[DEBUG] mapper built", flush=True)
+
+            _t0 = _t.time()
+            dataset = get_detection_dataset_dicts(
+                cfg.DATASETS.TRAIN,
+                filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
+            )
+            print(
+                f"[DEBUG] get_detection_dataset_dicts returned in {_t.time() - _t0:.2f}s, type={type(dataset)}",
+                flush=True,
+            )
+
+            _t0 = _t.time()
+            n = len(dataset)
+            print(f"[DEBUG] len(dataset)={n} took {_t.time() - _t0:.2f}s", flush=True)
+
+            _t0 = _t.time()
+            sampler = TrainingSampler(n, seed=cfg.SEED)
+            print(
+                f"[DEBUG] TrainingSampler built in {_t.time() - _t0:.2f}s", flush=True
+            )
+
+            _t0 = _t.time()
+            loader = build_detection_train_loader(
+                cfg, dataset=dataset, mapper=mapper, sampler=sampler
+            )
+            print(
+                f"[DEBUG] build_detection_train_loader returned in {_t.time() - _t0:.2f}s",
+                flush=True,
+            )
+            return loader
         else:
             mapper = None
             return build_detection_train_loader(cfg, mapper=mapper)
@@ -418,8 +454,11 @@ def main(args):
             verify_results(cfg, res)
         return res
 
+    print("[DEBUG] before Trainer(cfg)", flush=True)
     trainer = Trainer(cfg)
+    print("[DEBUG] after Trainer(cfg), before resume_or_load", flush=True)
     trainer.resume_or_load(resume=args.resume)
+    print("[DEBUG] after resume_or_load, before train()", flush=True)
     return trainer.train()
 
 

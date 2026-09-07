@@ -24,12 +24,13 @@ import random
 import time
 
 import h5py
+import torch.utils.data
 from sgdata import pool, schema
 
 logger = logging.getLogger(__name__)
 
 
-class LivePoolDataset:
+class LivePoolDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         pool_dir,
