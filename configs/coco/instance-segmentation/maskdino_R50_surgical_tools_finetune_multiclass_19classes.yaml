@@ -1,0 +1,42 @@
+_BASE_: maskdino_R50_bs16_50ep_3s.yaml
+MODEL:
+  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
+  SEM_SEG_HEAD:
+    # Must cover the max category_id in the data + 1: the hdf5 loader uses
+    # category_id directly as the class index (index 0 = background, unused).
+    # The setb live pool carries a 19-entry instrument_classes list (ids 11-18).
+    NUM_CLASSES: 19
+  MaskDINO:
+    NUM_OBJECT_QUERIES: 100
+    TEST:
+      NMS_IOU: 0.5
+      HUNGARIAN_EVAL:
+        ENABLED: True
+DATASETS:
+  TRAIN: ("train",)
+  TEST: ("val",)
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  IMAGE_SIZE: 1024
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  MIN_VISIBILITY: 0.0
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024
+
+# Extension of the 90k run in runs/multi_class_v1 (segm/bbox AP still rising
+# at 90k). Resuming on 4 GPUs at 1 img/GPU, LR scaled linearly with batch
+# size (2->4), no LR decay (flat schedule matches the first 90k).
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0003
+  STEPS: ()
+  MAX_ITER: 10000
+  CHECKPOINT_PERIOD: 1000
+  WARMUP_ITERS: 250
+  WARMUP_FACTOR: 0.001 #added for carring optimizer state
+TEST:
+  EVAL_PERIOD: 500
+OUTPUT_DIR: "runs/multi_class_setb_live_pool"
+DATALOADER:
+  NUM_WORKERS: 4
