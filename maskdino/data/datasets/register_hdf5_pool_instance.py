@@ -22,7 +22,7 @@ from .live_pool_dataset import LivePoolDataset
 # register_hdf5_instance.py. None disables live-pool training entirely (the
 # default). "val" always stays static/pinned regardless of this - scoring
 # against a shifting pool would make eval runs incomparable.
-_POOL_DIR = "/home/janick.bilang/dev/scene_generator/output/live_pool"
+_POOL_DIR = "/home/janick.bilang/training/images/pool_1024x1024_setb_train"
 _POOL_VIRTUAL_SIZE = (
     1024  # order-of-magnitude match to scene_generator's image_pool.cap
 )

@@ -19,8 +19,8 @@ _PREDEFINED_SPLITS = {
     # name: dirname
     # absolute paths, so os.path.join(root, dirname) below returns them as-is regardless
     # of DETECTRON2_DATASETS/root
-    "train": "/home/janick.bilang/dev/scene_generator/output/20260808203602_1024x1024_train",
-    "val": "/home/janick.bilang/dev/scene_generator/output/20260808210656_1024x1024_valid",
+    "train": "/home/janick.bilang/dev/scene_generator/output/valid",
+    "val": "/home/janick.bilang/training/images/20260908_1024x1024_setb_valid",
 }
 
 
