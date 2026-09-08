@@ -8,12 +8,19 @@ import h5py
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from sgdata import schema
 
+from .register_hdf5_pool_instance import (
+    _POOL_DIR,
+    _POOL_MIN_FILES,
+    _POOL_VIRTUAL_SIZE,
+    register_hdf5_pool_instances,
+)
+
 _PREDEFINED_SPLITS = {
     # name: dirname
     # absolute paths, so os.path.join(root, dirname) below returns them as-is regardless
     # of DETECTRON2_DATASETS/root
-    "train": "/home/janick.bilang/dev/scene_generator/output/20260808203602_1024x1024_train",
-    "val": "/home/janick.bilang/dev/scene_generator/output/20260808210656_1024x1024_valid",
+    "train": "/home/janick.bilang/dev/scene_generator/output/valid",
+    "val": "/home/janick.bilang/training/images/20260908_1024x1024_setb_valid",
 }
 
 
@@ -63,7 +70,12 @@ def register_hdf5_instances(name, hdf5_dir):
 
 def register_all_hdf5_instances(root):
     for key, dirname in _PREDEFINED_SPLITS.items():
-        register_hdf5_instances(key, os.path.join(root, dirname))
+        if key == "train" and _POOL_DIR:
+            register_hdf5_pool_instances(
+                key, _POOL_DIR, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES
+            )
+        else:
+            register_hdf5_instances(key, os.path.join(root, dirname))
 
 
 _root = os.getenv("DETECTRON2_DATASETS", "datasets")

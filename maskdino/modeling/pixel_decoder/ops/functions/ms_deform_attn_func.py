@@ -13,6 +13,8 @@ from __future__ import absolute_import
 from __future__ import print_function
 from __future__ import division
 
+import warnings
+
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
@@ -20,13 +22,17 @@ from torch.autograd.function import once_differentiable
 
 try:
     import MultiScaleDeformableAttention as MSDA
-except ModuleNotFoundError as e:
-    info_string = (
-        "\n\nPlease compile MultiScaleDeformableAttention CUDA op with the following commands:\n"
-        "\t`cd maskdino/modeling/pixel_decoder/ops`\n"
-        "\t`sh make.sh`\n"
+except ModuleNotFoundError:
+    # The compiled CUDA op is optional here: MSDeformAttn.forward always uses the
+    # pure-PyTorch ms_deform_attn_core_pytorch fallback (see modules/ms_deform_attn.py),
+    # so MSDeformAttnFunction below - the only consumer of MSDA - is never called in the
+    # train/eval pipeline. Warn instead of raising so the import chain works uncompiled.
+    MSDA = None
+    warnings.warn(
+        "MultiScaleDeformableAttention CUDA op is not compiled; using the pure-PyTorch "
+        "fallback. To build it: `cd maskdino/modeling/pixel_decoder/ops && sh make.sh` "
+        "(requires a CUDA toolkit with CUDA_HOME set)."
     )
-    raise ModuleNotFoundError(info_string)
 
 
 class MSDeformAttnFunction(Function):
