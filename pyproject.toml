@@ -22,6 +22,9 @@ dependencies = [
 scene-generator = { path = "../scene_generator", editable = true }
 detectron2 = { git = "https://github.com/facebookresearch/detectron2.git" }
 
+[tool.uv.extra-build-dependencies]
+detectron2 = [{ requirement = "torch", match-runtime = true }]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
