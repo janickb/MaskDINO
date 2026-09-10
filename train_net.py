@@ -124,14 +124,6 @@ class Trainer(DefaultTrainer):
         self.cfg = cfg
 
         self.register_hooks(self.build_hooks())
-        # TODO: release model conversion checkpointer from DINO to MaskDINO
-        self.checkpointer = DetectionCheckpointer(
-            # Assume you want to save checkpoints together with logs/statistics
-            model,
-            cfg.OUTPUT_DIR,
-            **kwargs,
-        )
-        # TODO: release GPU cluster submit scripts based on submitit for multi-node training
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
