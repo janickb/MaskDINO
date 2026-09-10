@@ -141,9 +141,12 @@ def add_maskdino_config(cfg):
     cfg.INPUT.MIN_SCALE = 0.1
     cfg.INPUT.MAX_SCALE = 2.0
 
-    # drop hdf5 instances whose stamped "visibility_fraction" is below this at
-    # dataset-mapper time (0 = keep all, including instances missing the field)
     cfg.INPUT.MIN_VISIBILITY = 0.0
+
+    cfg.INPUT.RANDOM_ROTATION = True
+    cfg.INPUT.ROTATION_ANGLES = [-180.0, 90.0, 0.0, 90, ]
+    # if False, keep the image size and let the corners rotate out of frame
+    cfg.INPUT.ROTATION_EXPAND = False
 
     # point loss configs
     # Number of points sampled during training for a mask point head.
