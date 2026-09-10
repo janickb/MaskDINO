@@ -59,6 +59,7 @@ from detectron2.utils.logger import setup_logger
 
 # MaskDINO
 from maskdino import (
+    ClassMapping,
     COCOInstanceNewBaselineDatasetMapper,
     COCOPanopticNewBaselineDatasetMapper,
     DetrDatasetMapper,
@@ -67,6 +68,8 @@ from maskdino import (
     MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
     add_maskdino_config,
+    set_num_classes_from_metadata,
+    write_class_mapping_sidecar,
 )
 
 
@@ -442,6 +445,12 @@ def setup(args):
     add_maskdino_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    # NUM_CLASSES == -1 means "size the class head to the dataset": fill it in from
+    # the registered dataset's effective class count. No-op for stock datasets.
+    _ds_for_classes = (
+        cfg.DATASETS.TEST[0] if args.eval_only else cfg.DATASETS.TRAIN[0]
+    )
+    set_num_classes_from_metadata(cfg, _ds_for_classes)
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(

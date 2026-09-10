@@ -27,6 +27,8 @@ import h5py
 import torch.utils.data
 from sgdata import pool, schema
 
+from ..class_mapping import remap_gt_category_ids
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,11 +42,13 @@ class LivePoolDataset(torch.utils.data.Dataset):
         min_files: int = 50,
         min_files_timeout_s: float = 1800.0,
         max_read_retries: int = 5,
+        class_mapping=None,
     ):
         self.pool_dir = str(pool_dir)
         self.virtual_size = int(virtual_size)
         self.refresh_interval_s = refresh_interval_s
         self.max_read_retries = max_read_retries
+        self._class_mapping = class_mapping
 
         self._cache: list[str] = []
         self._cache_time = 0.0

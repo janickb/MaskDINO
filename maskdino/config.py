@@ -80,6 +80,12 @@ def add_maskdino_config(cfg):
         "sem_seg_head.predictor.class_embed"
     ]
 
+    # -1 = "derive from the dataset": for datasets registered with a compact class
+    # mapping (the surgical HDF5 loaders), train_net.setup() fills this in from the
+    # dataset's effective class count via set_num_classes_from_metadata(). Stock
+    # datasets (COCO/ADE/panoptic) keep whatever their YAML pins.
+    cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = -1
+
     # MSDeformAttn encoder configs
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_IN_FEATURES = ["res3", "res4", "res5"]
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_N_POINTS = 4

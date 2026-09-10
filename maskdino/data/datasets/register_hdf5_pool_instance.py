@@ -11,9 +11,10 @@ import logging
 import time
 
 import h5py
-from detectron2.data import DatasetCatalog, MetadataCatalog
+from detectron2.data import DatasetCatalog
 from sgdata import pool, schema
 
+from ..class_mapping import apply_class_mapping_to_metadata, derive_class_mapping
 from .live_pool_dataset import LivePoolDataset
 
 # Live-pool training set (opt-in): set _POOL_DIR below to enable it - the
@@ -57,11 +58,14 @@ def _wait_for_one_frame(pool_dir, timeout_s=1800.0):
 
 
 def register_hdf5_pool_instances(name, pool_dir, virtual_size, min_files):
-    DatasetCatalog.register(
-        name,
-        lambda: LivePoolDataset(pool_dir, virtual_size, min_files=min_files),
-    )
     sample_path = _wait_for_one_frame(pool_dir)
     with h5py.File(sample_path, "r") as f:
-        thing_classes = json.loads(f[schema.INSTRUMENT_CLASSES][()])
-    MetadataCatalog.get(name).set(thing_classes=thing_classes, evaluator_type="coco")
+        instrument_classes = json.loads(f[schema.INSTRUMENT_CLASSES][()])
+    cm = derive_class_mapping(instrument_classes)
+    DatasetCatalog.register(
+        name,
+        lambda: LivePoolDataset(
+            pool_dir, virtual_size, min_files=min_files, class_mapping=cm
+        ),
+    )
+    apply_class_mapping_to_metadata(name, cm)

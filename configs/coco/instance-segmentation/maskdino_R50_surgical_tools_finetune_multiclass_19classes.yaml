@@ -2,10 +2,9 @@ _BASE_: maskdino_R50_bs16_50ep_3s.yaml
 MODEL:
   WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
   SEM_SEG_HEAD:
-    # Must cover the max category_id in the data + 1: the hdf5 loader uses
-    # category_id directly as the class index (index 0 = background, unused).
-    # The setb live pool carries a 19-entry instrument_classes list (ids 11-18).
-    NUM_CLASSES: 19
+    # -1: derive the class-head width from the dataset. train_net.setup() sets it
+    # from the registered dataset's effective class count.
+    NUM_CLASSES: -1
   MaskDINO:
     NUM_OBJECT_QUERIES: 100
     TEST:
