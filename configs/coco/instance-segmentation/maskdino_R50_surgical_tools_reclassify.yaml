@@ -39,9 +39,11 @@ INPUT:
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0005        # a single linear head tolerates a higher LR than the full model
-  STEPS: (300,600,)
+  LR_SCHEDULER_NAME: "WarmupCosineLR"   # smooth cosine decay instead of stepped x10 drops
+  BASE_LR_END: 0.000005                 # cosine floor = 1% of BASE_LR
   MAX_ITER: 1000         # ~150 train imgs -> ~40 epochs; retune from the eval curve
   WARMUP_ITERS: 50
+  WARMUP_FACTOR: 0.001                  # real linear ramp; Base-COCO inherits 1.0 (= no ramp)
   CHECKPOINT_PERIOD: 1000   # /home quota is tight - keep few ~500MB checkpoints
 TEST:
   EVAL_PERIOD: 200

@@ -25,11 +25,12 @@ INPUT:
 
 # Extension of the 90k run in runs/multi_class_v1 (segm/bbox AP still rising
 # at 90k). Resuming on 4 GPUs at 1 img/GPU, LR scaled linearly with batch
-# size (2->4), no LR decay (flat schedule matches the first 90k).
+# size (2->4). Cosine LR decay from BASE_LR to a 1% floor over MAX_ITER.
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0003
-  STEPS: (4000,)
+  LR_SCHEDULER_NAME: "WarmupCosineLR"   # smooth cosine decay instead of the x10 drop at 4000
+  BASE_LR_END: 0.000003                 # cosine floor = 1% of BASE_LR
   MAX_ITER: 12000
   CHECKPOINT_PERIOD: 1000
   WARMUP_ITERS: 250
