@@ -1,0 +1,42 @@
+_BASE_: maskdino_R50_bs16_50ep_3s.yaml
+MODEL:
+  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
+  SEM_SEG_HEAD:
+    # -1: derive the class-head width from the dataset. train_net.setup() sets it
+    # from the registered dataset's effective class count.
+    NUM_CLASSES: -1
+  MaskDINO:
+    NUM_OBJECT_QUERIES: 64
+    TEST:
+      NMS_IOU: 0.5
+      HUNGARIAN_EVAL:
+        ENABLED: True
+DATASETS:
+  TRAIN: ("train",)
+  TEST: ("val",)
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  IMAGE_SIZE: 1024
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  MIN_VISIBILITY: 0.0
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024
+
+# Extension of the 90k run in runs/multi_class_v1 (segm/bbox AP still rising
+# at 90k). Resuming on 4 GPUs at 1 img/GPU, LR scaled linearly with batch
+# size (2->4). Cosine LR decay from BASE_LR to a 1% floor over MAX_ITER.
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0003
+  LR_SCHEDULER_NAME: "WarmupCosineLR"   # smooth cosine decay instead of the x10 drop at 4000
+  BASE_LR_END: 0.000003                 # cosine floor = 1% of BASE_LR
+  MAX_ITER: 15000
+  CHECKPOINT_PERIOD: 1000
+  WARMUP_ITERS: 250
+  WARMUP_FACTOR: 0.001 #added for carring optimizer state
+TEST:
+  EVAL_PERIOD: 500
+OUTPUT_DIR: "runs/20260910_multi_class_seta_64_queries"
+DATALOADER:
+  NUM_WORKERS: 2
