@@ -1,0 +1,51 @@
+_BASE_: maskdino_R50_bs16_50ep_3s.yaml
+# Phase-2 "reclassification mode": load the phase-1 set-B model, freeze everything
+# except sem_seg_head.predictor.class_embed, and retrain the class head on the
+# sparse single-instrument renders (set A + set B together).
+#
+# The head is compact: reclass_train has N=16 effective classes (set A ids 1-6,8,9
+# + set B ids 11-18), so the class head is wider than phase-1's N=8. WEIGHTS must
+# therefore point at an *adapted* checkpoint from tools/adapt_classifier_checkpoint.py,
+# which copies the 8 set-B rows into their matching slots and fresh-inits the 8
+# set-A rows. All 16 rows train; DN is off so the num_classes-shaped label_enc is
+# inert. See requirements_new_feature_reclassification.md.
+MODEL:
+  # Phase-1 set-B checkpoint re-indexed to the 16-class reclass label space:
+  #   ./.venv/bin/python tools/adapt_classifier_checkpoint.py \
+  #     --src runs/multi_class_setb_live_pool_real_size_4/model_final.pth --src-legacy-raw
+  WEIGHTS: "runs/multi_class_setb_live_pool_real_size_4/model_final_reclass16.pth"
+  SEM_SEG_HEAD:
+    NUM_CLASSES: -1   # derived from reclass_train (-> N=16); see class_mapping.py
+  MaskDINO:
+    NUM_OBJECT_QUERIES: 100
+    DN: "no"                         # disable denoising -> label_enc never used
+    CLASSIFIER_RETRAIN:
+      ENABLED: True                  # freeze all but class_embed; force labels-only loss
+    TEST:
+      NMS_IOU: 0.5
+      HUNGARIAN_EVAL:
+        ENABLED: True                # writes inference/instance_matching_confusion*.{csv,png}
+DATASETS:
+  TRAIN: ("reclass_train",)   # classification set (A+B), rotation angles deg%72 != 0
+  TEST: ("reclass_val",)      # same set, held-out angles deg%72 == 0
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  IMAGE_SIZE: 1024
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  MIN_VISIBILITY: 0.0
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0005        # a single linear head tolerates a higher LR than the full model
+  STEPS: (300,600,)
+  MAX_ITER: 1000         # ~150 train imgs -> ~40 epochs; retune from the eval curve
+  WARMUP_ITERS: 50
+  CHECKPOINT_PERIOD: 1000   # /home quota is tight - keep few ~500MB checkpoints
+TEST:
+  EVAL_PERIOD: 200
+OUTPUT_DIR: "runs/reclassify_4-1"
+DATALOADER:
+  NUM_WORKERS: 4
+  FILTER_EMPTY_ANNOTATIONS: True

@@ -73,6 +73,13 @@ def add_maskdino_config(cfg):
 
     cfg.MODEL.MaskDINO.EVAL_FLAG = 1
 
+    # Classifier-only few-shot retraining
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN = CN()
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED = False
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.TRAINABLE_PARAM_PREFIXES = [
+        "sem_seg_head.predictor.class_embed"
+    ]
+
     # MSDeformAttn encoder configs
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_IN_FEATURES = ["res3", "res4", "res5"]
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_N_POINTS = 4
