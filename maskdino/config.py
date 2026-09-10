@@ -73,6 +73,19 @@ def add_maskdino_config(cfg):
 
     cfg.MODEL.MaskDINO.EVAL_FLAG = 1
 
+    # Classifier-only few-shot retraining
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN = CN()
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED = False
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.TRAINABLE_PARAM_PREFIXES = [
+        "sem_seg_head.predictor.class_embed"
+    ]
+
+    # -1 = "derive from the dataset": for datasets registered with a compact class
+    # mapping (the surgical HDF5 loaders), train_net.setup() fills this in from the
+    # dataset's effective class count via set_num_classes_from_metadata(). Stock
+    # datasets (COCO/ADE/panoptic) keep whatever their YAML pins.
+    cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = -1
+
     # MSDeformAttn encoder configs
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_IN_FEATURES = ["res3", "res4", "res5"]
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_N_POINTS = 4
@@ -134,9 +147,12 @@ def add_maskdino_config(cfg):
     cfg.INPUT.MIN_SCALE = 0.1
     cfg.INPUT.MAX_SCALE = 2.0
 
-    # drop hdf5 instances whose stamped "visibility_fraction" is below this at
-    # dataset-mapper time (0 = keep all, including instances missing the field)
     cfg.INPUT.MIN_VISIBILITY = 0.0
+
+    cfg.INPUT.RANDOM_ROTATION = True
+    cfg.INPUT.ROTATION_ANGLES = [-180.0, 90.0, 0.0, 90, ]
+    # if False, keep the image size and let the corners rotate out of frame
+    cfg.INPUT.ROTATION_EXPAND = False
 
     # point loss configs
     # Number of points sampled during training for a mask point head.

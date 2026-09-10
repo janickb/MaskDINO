@@ -386,8 +386,6 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         classaware_recall_per_class = {}  # breakdown of `classaware_recall`
         misclassified_per_class = {}
         for cid in sorted(gt_count):
-            if cid == 0:  # background slot, never a real instance
-                continue
             name = self._class_name(cid)
             gtc = max(gt_count.get(cid, 0), 1)
             matched_c = gt_count.get(cid, 0) - false_neg_pc.get(cid, 0)  # matched

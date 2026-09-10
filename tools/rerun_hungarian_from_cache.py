@@ -24,7 +24,7 @@ from detectron2.data import DatasetCatalog
 from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.structures import Boxes, Instances
 
-from maskdino import add_maskdino_config
+from maskdino import add_maskdino_config, set_num_classes_from_metadata
 from maskdino.evaluation.hungarian_instance_evaluation import HungarianInstanceEvaluator
 
 
@@ -43,6 +43,7 @@ def main():
     add_deeplab_config(cfg)
     add_maskdino_config(cfg)
     cfg.merge_from_file(args.config_file)
+    set_num_classes_from_metadata(cfg, args.dataset or cfg.DATASETS.TEST[0])
     he = cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
     he.ENABLED = True
     if args.score_thresh is not None:

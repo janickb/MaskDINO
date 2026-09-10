@@ -59,6 +59,7 @@ from detectron2.utils.logger import setup_logger
 
 # MaskDINO
 from maskdino import (
+    ClassMapping,
     COCOInstanceNewBaselineDatasetMapper,
     COCOPanopticNewBaselineDatasetMapper,
     DetrDatasetMapper,
@@ -67,6 +68,8 @@ from maskdino import (
     MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
     add_maskdino_config,
+    set_num_classes_from_metadata,
+    write_class_mapping_sidecar,
 )
 
 
@@ -99,6 +102,20 @@ class Trainer(DefaultTrainer):
             "trainer": weakref.proxy(self),
         }
         # kwargs.update(model_ema.may_get_ema_checkpointer(cfg, model)) TODO: release ema training for large models
+        
+        # Ride the compact class-id -> {category_id, name} map inside every
+        # model_*.pth (readable as torch.load(p)["class_mapping"]) so a checkpoint
+        # is self-describing.
+        _train_md = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
+        _class_mapping = (
+            ClassMapping.from_metadata(_train_md)
+            if _train_md.get("class_mapping_entries", None)
+            else None
+        )
+        if _class_mapping is not None:
+            kwargs["class_mapping"] = _class_mapping
+            if comm.is_main_process():
+                write_class_mapping_sidecar(cfg.OUTPUT_DIR, _class_mapping)
         self.checkpointer = DetectionCheckpointer(
             # Assume you want to save checkpoints together with logs/statistics
             model,
@@ -110,14 +127,6 @@ class Trainer(DefaultTrainer):
         self.cfg = cfg
 
         self.register_hooks(self.build_hooks())
-        # TODO: release model conversion checkpointer from DINO to MaskDINO
-        self.checkpointer = DetectionCheckpointer(
-            # Assume you want to save checkpoints together with logs/statistics
-            model,
-            cfg.OUTPUT_DIR,
-            **kwargs,
-        )
-        # TODO: release GPU cluster submit scripts based on submitit for multi-node training
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
@@ -129,7 +138,10 @@ class Trainer(DefaultTrainer):
         hacky if-else logic here.
         """
         if output_folder is None:
-            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
+            if len(cfg.DATASETS.TEST) > 1:
+                output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name)
+            else:
+                output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
         evaluator_list = []
         evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
         # semantic segmentation
@@ -143,7 +155,11 @@ class Trainer(DefaultTrainer):
             )
         # instance segmentation
         if evaluator_type == "coco":
-            evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
+            evaluator_list.append(
+                COCOEvaluator(
+                    dataset_name, output_dir=output_folder, allow_cached_coco=False
+                )
+            )
             if cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED:
                 from maskdino.evaluation.hungarian_instance_evaluation import (
                     HungarianInstanceEvaluator,
@@ -429,6 +445,12 @@ def setup(args):
     add_maskdino_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    # NUM_CLASSES == -1 means "size the class head to the dataset": fill it in from
+    # the registered dataset's effective class count. No-op for stock datasets.
+    _ds_for_classes = (
+        cfg.DATASETS.TEST[0] if args.eval_only else cfg.DATASETS.TRAIN[0]
+    )
+    set_num_classes_from_metadata(cfg, _ds_for_classes)
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(

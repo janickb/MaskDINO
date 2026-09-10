@@ -27,6 +27,8 @@ import h5py
 import torch.utils.data
 from sgdata import pool, schema
 
+from ..class_mapping import remap_gt_category_ids
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,11 +42,13 @@ class LivePoolDataset(torch.utils.data.Dataset):
         min_files: int = 50,
         min_files_timeout_s: float = 1800.0,
         max_read_retries: int = 5,
+        class_mapping=None,
     ):
         self.pool_dir = str(pool_dir)
         self.virtual_size = int(virtual_size)
         self.refresh_interval_s = refresh_interval_s
         self.max_read_retries = max_read_retries
+        self._class_mapping = class_mapping
 
         self._cache: list[str] = []
         self._cache_time = 0.0
@@ -97,11 +101,17 @@ class LivePoolDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return self.virtual_size
 
-    @staticmethod
-    def _read_dict(path: str, image_id: int) -> dict:
+    def _read_dict(self, path: str, image_id: int) -> dict:
         with h5py.File(path, "r") as f:
             height, width = f[schema.COLORS].shape[:2]
             annotations = json.loads(f[schema.COCO_ANNOTATIONS][()])
+        # Same contract as the static register_hdf5_instance path: dataset dicts
+        # must carry contiguous [0, num_classes) category_ids, not raw canonical
+        # ones. Raw ids (background + unused_* slots dropped, so max id can exceed
+        # num_classes) otherwise reach nn.Embedding(num_classes) in the decoder's
+        # DN path -> CUDA device-side assert.
+        if self._class_mapping is not None:
+            remap_gt_category_ids(annotations, self._class_mapping)
         return {
             "file_name": path,
             "image_id": image_id,

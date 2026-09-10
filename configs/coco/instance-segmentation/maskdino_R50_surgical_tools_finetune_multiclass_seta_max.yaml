@@ -31,12 +31,12 @@ SOLVER:
   BASE_LR: 0.0003
   LR_SCHEDULER_NAME: "WarmupCosineLR"   # smooth cosine decay instead of the x10 drop at 4000
   BASE_LR_END: 0.000003                 # cosine floor = 1% of BASE_LR
-  MAX_ITER: 12000
-  CHECKPOINT_PERIOD: 1000
+  MAX_ITER: 100000
+  CHECKPOINT_PERIOD: 10000
   WARMUP_ITERS: 250
   WARMUP_FACTOR: 0.001 #added for carring optimizer state
 TEST:
-  EVAL_PERIOD: 500
-OUTPUT_DIR: "runs/multi_class_setb_live_pool_real_size_4"
+  EVAL_PERIOD: 2000
+OUTPUT_DIR: "runs/20260910_multi_class_seta_max"
 DATALOADER:
   NUM_WORKERS: 2

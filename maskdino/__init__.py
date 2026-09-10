@@ -10,6 +10,15 @@ from . import modeling
 # config
 from .config import add_maskdino_config
 
+# compact ("effective") class label space + embedded checkpoint mapping
+from .data.class_mapping import (
+    ClassMapping,
+    derive_class_mapping,
+    load_class_mapping,
+    set_num_classes_from_metadata,
+    write_class_mapping_sidecar,
+)
+
 # dataset loading
 from .data.dataset_mappers.coco_instance_new_baseline_dataset_mapper import COCOInstanceNewBaselineDatasetMapper
 from .data.dataset_mappers.coco_panoptic_new_baseline_dataset_mapper import COCOPanopticNewBaselineDatasetMapper

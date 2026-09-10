@@ -30,7 +30,7 @@ from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.utils.colormap import random_color
 from detectron2.utils.visualizer import ColorMode, Visualizer, _create_text_labels
 
-from maskdino import add_maskdino_config
+from maskdino import add_maskdino_config, set_num_classes_from_metadata
 from sgdata.reader import read_image as read_hdf5_image
 
 HDF5_EXTS = (".hdf5", ".h5")
@@ -67,6 +67,8 @@ def main():
     add_maskdino_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+
+    set_num_classes_from_metadata(cfg, cfg.DATASETS.TEST[0])
     cfg.freeze()
 
     predictor = DefaultPredictor(cfg)

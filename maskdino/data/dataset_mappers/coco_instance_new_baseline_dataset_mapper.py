@@ -40,7 +40,7 @@ def convert_coco_poly_to_mask(segmentations, height, width):
 def build_transform_gen(cfg, is_train):
     """
     Create a list of default :class:`Augmentation` from config.
-    Now it includes resizing and flipping.
+    Now it includes rotation and resizing.
     Returns:
         list[Augmentation]
     """
@@ -51,11 +51,16 @@ def build_transform_gen(cfg, is_train):
 
     augmentation = []
 
-    if cfg.INPUT.RANDOM_FLIP != "none":
+    # Surgical instruments have a fixed handedness: a mirrored scalpel / needle
+    # holder does not exist, so RandomFlip teaches the model invalid shapes.
+    # Rotation keeps every instrument physically valid while covering the
+    # arbitrary in-plane orientations the camera sees.
+    if cfg.INPUT.RANDOM_ROTATION:
         augmentation.append(
-            T.RandomFlip(
-                horizontal=cfg.INPUT.RANDOM_FLIP == "horizontal",
-                vertical=cfg.INPUT.RANDOM_FLIP == "vertical",
+            T.RandomRotation(
+                angle=list(cfg.INPUT.ROTATION_ANGLES),
+                expand=cfg.INPUT.ROTATION_EXPAND,
+                sample_style="range",
             )
         )
 

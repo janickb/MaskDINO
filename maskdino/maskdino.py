@@ -92,6 +92,8 @@ class MaskDINO(nn.Module):
         focus_on_box: bool = False,
         transform_eval: bool = False,
         semantic_ce_loss: bool = False,
+        classifier_retrain: bool = False,
+        classifier_retrain_prefixes: Tuple[str] = ("sem_seg_head.predictor.class_embed",),
     ):
         """
         Args:
@@ -150,6 +152,19 @@ class MaskDINO(nn.Module):
 
         if not self.semantic_on:
             assert self.sem_seg_postprocess_before_inference
+
+        self.classifier_retrain = classifier_retrain
+        self.classifier_retrain_prefixes = tuple(classifier_retrain_prefixes)
+        if self.classifier_retrain:
+            trainable = 0
+            for name, p in self.named_parameters():
+                keep = name.startswith(self.classifier_retrain_prefixes)
+                p.requires_grad_(keep)
+                trainable += keep
+            print(
+                f'[classifier-retrain] {trainable} trainable parameter tensor(s), '
+                f'prefixes={self.classifier_retrain_prefixes}'
+            )
 
         print('criterion.weight_dict ', self.criterion.weight_dict)
 
@@ -211,6 +226,9 @@ class MaskDINO(nn.Module):
             losses = ["labels", "masks","boxes"]
         else:
             losses = ["labels", "masks"]
+        if cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED:
+            # Only class_embed trains; mask/box losses have no path to it.
+            losses = ["labels"]
         # building criterion
         criterion = SetCriterion(
             sem_seg_head.num_classes,
@@ -253,7 +271,9 @@ class MaskDINO(nn.Module):
             "focus_on_box": cfg.MODEL.MaskDINO.TEST.TEST_FOUCUS_ON_BOX,
             "transform_eval": cfg.MODEL.MaskDINO.TEST.PANO_TRANSFORM_EVAL,
             "pano_temp": cfg.MODEL.MaskDINO.TEST.PANO_TEMPERATURE,
-            "semantic_ce_loss": cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and not cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON
+            "semantic_ce_loss": cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and not cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
+            "classifier_retrain": cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED,
+            "classifier_retrain_prefixes": tuple(cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.TRAINABLE_PARAM_PREFIXES),
         }
 
     @property
