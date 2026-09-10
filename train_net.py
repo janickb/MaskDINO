@@ -99,6 +99,20 @@ class Trainer(DefaultTrainer):
             "trainer": weakref.proxy(self),
         }
         # kwargs.update(model_ema.may_get_ema_checkpointer(cfg, model)) TODO: release ema training for large models
+        
+        # Ride the compact class-id -> {category_id, name} map inside every
+        # model_*.pth (readable as torch.load(p)["class_mapping"]) so a checkpoint
+        # is self-describing.
+        _train_md = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
+        _class_mapping = (
+            ClassMapping.from_metadata(_train_md)
+            if _train_md.get("class_mapping_entries", None)
+            else None
+        )
+        if _class_mapping is not None:
+            kwargs["class_mapping"] = _class_mapping
+            if comm.is_main_process():
+                write_class_mapping_sidecar(cfg.OUTPUT_DIR, _class_mapping)
         self.checkpointer = DetectionCheckpointer(
             # Assume you want to save checkpoints together with logs/statistics
             model,
@@ -129,7 +143,10 @@ class Trainer(DefaultTrainer):
         hacky if-else logic here.
         """
         if output_folder is None:
-            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
+            if len(cfg.DATASETS.TEST) > 1:
+                output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name)
+            else:
+                output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
         evaluator_list = []
         evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
         # semantic segmentation
@@ -143,7 +160,11 @@ class Trainer(DefaultTrainer):
             )
         # instance segmentation
         if evaluator_type == "coco":
-            evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
+            evaluator_list.append(
+                COCOEvaluator(
+                    dataset_name, output_dir=output_folder, allow_cached_coco=False
+                )
+            )
             if cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED:
                 from maskdino.evaluation.hungarian_instance_evaluation import (
                     HungarianInstanceEvaluator,
