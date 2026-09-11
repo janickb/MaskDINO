@@ -39,12 +39,15 @@ INPUT:
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0005        # a single linear head tolerates a higher LR than the full model
-  LR_SCHEDULER_NAME: "WarmupCosineLR"   # smooth cosine decay instead of stepped x10 drops
-  BASE_LR_END: 0.000005                 # cosine floor = 1% of BASE_LR
+  LR_SCHEDULER_NAME: "WarmupCosineRestartsLR"   # SGDR: one warm restart, not a single decay
+  BASE_LR_END: 0.000005                 # cosine floor of every cycle = 1% of BASE_LR
   MAX_ITER: 1000         # ~150 train imgs -> ~40 epochs; retune from the eval curve
   WARMUP_ITERS: 50
   WARMUP_FACTOR: 0.001                  # real linear ramp; Base-COCO inherits 1.0 (= no ramp)
   CHECKPOINT_PERIOD: 1000   # /home quota is tight - keep few ~500MB checkpoints
+  COSINE_RESTARTS:
+    T_0: 400        # cycle 0 = [0,400) full decay to the floor; cycle 1 = [400,1200) cut off
+    T_MULT: 2.0     # at MAX_ITER=1000 (75% through) - one restart, not the ~5-cycle pattern
 TEST:
   EVAL_PERIOD: 200
 OUTPUT_DIR: "runs/reclassify_4-1"

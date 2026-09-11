@@ -1,0 +1,34 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify.yaml
+# Phase-2 variant: same few-shot reclass set (set A + set B sparse renders), but
+# the transformer DECODER is unfrozen too - not just the linear class head. The
+# ResNet backbone and the MSDeformAttn pixel encoder (sem_seg_head.pixel_decoder)
+# stay frozen; the DINO decoder layers + the mask/box prediction heads they drive
+# train at BASE_LR * DECODER_LR_MULTIPLIER while class_embed keeps the full
+# BASE_LR. Motivation: in the frozen-decoder baseline (runs/reclassify_v2) the
+# set-A instruments have class-agnostic recall ~0.0-0.5 - the frozen decoder does
+# not even localize them, so a class-head-only retrain cannot recover them.
+#
+# Because the decoder is trainable, CLASSIFIER_RETRAIN no longer forces a
+# labels-only loss: mask + box losses and deep supervision come back so the
+# decoder is anchored on segmentation quality (see maskdino/maskdino.py).
+#
+# This is a DISTINCT experimental condition from reclassify_v2 - it no longer
+# answers "are the frozen query embeddings linearly separable"; keep v2 as that
+# baseline.
+MODEL:
+  MaskDINO:
+    DROPOUT: 0.0                      # keep the train/eval-equivalence assumption
+                                     # (maskdino.py NOTE ~L283); revisit if the
+                                     # eval curve shows overfitting
+    CLASSIFIER_RETRAIN:
+      ENABLED: True
+      UNFREEZE_DECODER: True
+      DECODER_LR_MULTIPLIER: 0.1     # decoder effective LR = 5e-5
+SOLVER:
+  BASE_LR: 0.0005                    # linear class head; decoder via multiplier
+  BASE_LR_END: 0.000005
+  MAX_ITER: 1000
+  CHECKPOINT_PERIOD: 500             # keep an iter-500 checkpoint to fall back to
+TEST:
+  EVAL_PERIOD: 100                   # watch for decoder drift / overfit early
+OUTPUT_DIR: "runs/reclassify_unfreeze_decoder_v1"

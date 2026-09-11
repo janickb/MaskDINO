@@ -28,6 +28,11 @@ def add_maskdino_config(cfg):
     # optimizer
     cfg.SOLVER.OPTIMIZER = "ADAMW"
     cfg.SOLVER.BACKBONE_MULTIPLIER = 0.1
+    # SGDR cosine annealing with warm restarts (maskdino/solver/lr_scheduler.py). Only
+    # consulted when SOLVER.LR_SCHEDULER_NAME == "WarmupCosineRestartsLR".
+    cfg.SOLVER.COSINE_RESTARTS = CN()
+    cfg.SOLVER.COSINE_RESTARTS.T_0 = 1000  # iters; length of the first cycle
+    cfg.SOLVER.COSINE_RESTARTS.T_MULT = 2.0  # growth factor per restart (2.0 = classic SGDR)
 
     # MaskDINO model config
     cfg.MODEL.MaskDINO = CN()

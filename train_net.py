@@ -68,6 +68,7 @@ from maskdino import (
     MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
     add_maskdino_config,
+    build_warmup_cosine_restarts_lr_scheduler,
     set_num_classes_from_metadata,
     write_class_mapping_sidecar,
 )
@@ -328,9 +329,14 @@ class Trainer(DefaultTrainer):
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
         """
-        It now calls :func:`detectron2.solver.build_lr_scheduler`.
+        It now calls :func:`detectron2.solver.build_lr_scheduler`, except for the
+        "WarmupCosineRestartsLR" name (SGDR - not a stock detectron2 scheduler; see
+        maskdino/solver/lr_scheduler.py), which detectron2's own builder would
+        otherwise reject with ValueError.
         Overwrite it if you'd like a different scheduler.
         """
+        if cfg.SOLVER.LR_SCHEDULER_NAME == "WarmupCosineRestartsLR":
+            return build_warmup_cosine_restarts_lr_scheduler(cfg, optimizer)
         return build_lr_scheduler(cfg, optimizer)
 
     @classmethod
@@ -372,6 +378,8 @@ class Trainer(DefaultTrainer):
                     hyperparams["lr"] = (
                         hyperparams["lr"] * cfg.SOLVER.BACKBONE_MULTIPLIER
                     )
+                if decoder_lr_mult != 1.0 and module_name.startswith(decoder_lr_prefixes):
+                    hyperparams["lr"] = hyperparams["lr"] * decoder_lr_mult
                 if (
                     "relative_position_bias_table" in module_param_name
                     or "absolute_pos_embed" in module_param_name
