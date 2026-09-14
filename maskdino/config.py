@@ -103,6 +103,16 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.TRAINABLE_PARAM_PREFIXES = [
         "sem_seg_head.predictor.class_embed"
     ]
+    # Also unfreeze the transformer decoder (DINO decoder layers + the mask/box
+    # prediction heads it drives), leaving the backbone and the MSDeformAttn pixel
+    # encoder frozen. Lets the query features adapt to a few-shot set instead of
+    # only the linear class head. When True, the loss set is NOT forced to
+    # labels-only - mask/box losses + deep supervision come back so the decoder
+    # is anchored on segmentation quality.
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.UNFREEZE_DECODER = False
+    # Decoder params train at BASE_LR * this factor (the linear class head keeps
+    # the full BASE_LR); only applied when UNFREEZE_DECODER is True.
+    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.DECODER_LR_MULTIPLIER = 0.1
 
     # -1 = "derive from the dataset": for datasets registered with a compact class
     # mapping (the surgical HDF5 loaders), train_net.setup() fills this in from the

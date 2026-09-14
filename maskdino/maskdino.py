@@ -94,6 +94,7 @@ class MaskDINO(nn.Module):
         semantic_ce_loss: bool = False,
         classifier_retrain: bool = False,
         classifier_retrain_prefixes: Tuple[str] = ("sem_seg_head.predictor.class_embed",),
+        classifier_retrain_unfreeze_decoder: bool = False,
     ):
         """
         Args:
@@ -155,6 +156,17 @@ class MaskDINO(nn.Module):
 
         self.classifier_retrain = classifier_retrain
         self.classifier_retrain_prefixes = tuple(classifier_retrain_prefixes)
+        if classifier_retrain_unfreeze_decoder:
+            # DINO decoder stack + the heads it drives. The backbone and the
+            # MSDeformAttn pixel encoder (sem_seg_head.pixel_decoder) stay frozen;
+            # so do label_enc (DN off), query_feat/query_embed (fixed query init)
+            # and enc_output (two-stage query selection).
+            self.classifier_retrain_prefixes = self.classifier_retrain_prefixes + (
+                "sem_seg_head.predictor.decoder",
+                "sem_seg_head.predictor.mask_embed",
+                "sem_seg_head.predictor._bbox_embed",
+                "sem_seg_head.predictor.bbox_embed",
+            )
         if self.classifier_retrain:
             trainable = 0
             for name, p in self.named_parameters():
@@ -226,7 +238,10 @@ class MaskDINO(nn.Module):
             losses = ["labels", "masks","boxes"]
         else:
             losses = ["labels", "masks"]
-        if cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED:
+        if (
+            cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED
+            and not cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.UNFREEZE_DECODER
+        ):
             # Only class_embed trains; mask/box losses have no path to it.
             losses = ["labels"]
         # building criterion
@@ -274,6 +289,7 @@ class MaskDINO(nn.Module):
             "semantic_ce_loss": cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and not cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
             "classifier_retrain": cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED,
             "classifier_retrain_prefixes": tuple(cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.TRAINABLE_PARAM_PREFIXES),
+            "classifier_retrain_unfreeze_decoder": cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.UNFREEZE_DECODER,
         }
 
     @property

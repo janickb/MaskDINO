@@ -387,6 +387,21 @@ class Trainer(DefaultTrainer):
         defaults["lr"] = cfg.SOLVER.BASE_LR
         defaults["weight_decay"] = cfg.SOLVER.WEIGHT_DECAY
 
+        # classifier-retrain with the decoder unfrozen: the linear class head keeps
+        # BASE_LR, the (pretrained) decoder + its prediction heads train gentler.
+        cr = cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN
+        decoder_lr_mult = (
+            cr.DECODER_LR_MULTIPLIER
+            if cr.ENABLED and cr.UNFREEZE_DECODER
+            else 1.0
+        )
+        decoder_lr_prefixes = (
+            "sem_seg_head.predictor.decoder",
+            "sem_seg_head.predictor.mask_embed",
+            "sem_seg_head.predictor.bbox_embed",
+            "sem_seg_head.predictor._bbox_embed",
+        )
+
         norm_module_types = (
             torch.nn.BatchNorm1d,
             torch.nn.BatchNorm2d,
