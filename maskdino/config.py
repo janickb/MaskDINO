@@ -33,6 +33,11 @@ def add_maskdino_config(cfg):
     cfg.SOLVER.COSINE_RESTARTS = CN()
     cfg.SOLVER.COSINE_RESTARTS.T_0 = 1000  # iters; length of the first cycle
     cfg.SOLVER.COSINE_RESTARTS.T_MULT = 2.0  # growth factor per restart (2.0 = classic SGDR)
+    # Soften every restart after cycle 0 with its own short ramp instead of snapping
+    # straight to BASE_LR (plain SGDR). Both default to 0.0 = warm restarts, unchanged.
+    cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FACTOR = 0.0  # start-of-restart LR, as a fraction of BASE_LR
+    cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FRACTION = 0.0  # fraction of each restart cycle spent ramping
+
 
     # MaskDINO model config
     cfg.MODEL.MaskDINO = CN()

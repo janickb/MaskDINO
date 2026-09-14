@@ -48,6 +48,8 @@ SOLVER:
   COSINE_RESTARTS:
     T_0: 400        # cycle 0 = [0,400) full decay to the floor; cycle 1 = [400,1200) cut off
     T_MULT: 2.0     # at MAX_ITER=1000 (75% through) - one restart, not the ~5-cycle pattern
+    RESTART_WARMUP_FACTOR: 0.3      # restart ramps from 30% of BASE_LR instead of snapping to it
+    RESTART_WARMUP_FRACTION: 0.05   # over the first 5% of the restart cycle (400*0.05=20 iters)
 TEST:
   EVAL_PERIOD: 200
 OUTPUT_DIR: "runs/reclassify_4-1"
