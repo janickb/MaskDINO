@@ -387,6 +387,15 @@ class Trainer(DefaultTrainer):
         defaults["lr"] = cfg.SOLVER.BASE_LR
         defaults["weight_decay"] = cfg.SOLVER.WEIGHT_DECAY
 
+        # Stray leftover from a sibling branch's decoder-unfreeze feature
+        # (19-reclassify-with-unfrozen-decoder, commit 6c30a3b) that was never
+        # merged into this branch - kept as a permanent no-op so the
+        # module_name.startswith(decoder_lr_prefixes) check below doesn't
+        # NameError. Port that branch's config.py/maskdino.py changes too if
+        # you actually want this feature here.
+        decoder_lr_mult = 1.0
+        decoder_lr_prefixes = ()
+
         norm_module_types = (
             torch.nn.BatchNorm1d,
             torch.nn.BatchNorm2d,
