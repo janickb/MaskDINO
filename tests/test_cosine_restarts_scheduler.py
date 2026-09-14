@@ -70,3 +70,62 @@ def test_invalid_t_0_and_t_mult_raise():
         CosineWithRestartsParamScheduler(start_value=1.0, end_value=0.0, t_0=1.5, t_mult=2.0)
     with pytest.raises(ValueError):
         CosineWithRestartsParamScheduler(start_value=1.0, end_value=0.0, t_0=0.1, t_mult=0.5)
+
+
+def test_invalid_restart_warmup_frac_raises():
+    with pytest.raises(ValueError):
+        CosineWithRestartsParamScheduler(
+            start_value=1.0, end_value=0.0, t_0=0.1, restart_warmup_frac=1.0
+        )
+    with pytest.raises(ValueError):
+        CosineWithRestartsParamScheduler(
+            start_value=1.0, end_value=0.0, t_0=0.1, restart_warmup_frac=-0.1
+        )
+
+
+def test_restart_warmup_disabled_by_default_stays_warm():
+    # restart_warmup_frac=0.0 (the default) -> every restart still snaps straight
+    # to start_value, unchanged from the plain SGDR behavior.
+    sched = CosineWithRestartsParamScheduler(start_value=1.0, end_value=0.0, t_0=0.1, t_mult=2.0)
+    assert sched(0.1 + 1e-9) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_cycle_0_is_never_softened_even_when_restart_warmup_enabled():
+    # cycle 0 always uses the plain cosine curve - only cycle 1+ gets the ramp -
+    # since cycle 0 is expected to go through a separate, one-time WarmupParamScheduler.
+    sched = CosineWithRestartsParamScheduler(
+        start_value=1.0,
+        end_value=0.0,
+        t_0=0.1,
+        t_mult=2.0,
+        restart_warmup_factor=0.2,
+        restart_warmup_frac=0.5,
+    )
+    assert sched(0.0) == pytest.approx(1.0, abs=1e-9)
+    assert sched(0.05) == pytest.approx(_cosine(1.0, 0.0, 0.5), abs=1e-9)  # midpoint of cycle 0
+
+
+def test_restart_warmup_ramps_then_completes_the_decay():
+    # cycle 1 spans [0.1, 0.3); restart_warmup_frac=0.5 -> first half of that cycle
+    # (where 0.1-0.2) ramps linearly from restart_warmup_factor*start_value up to
+    # start_value; the second half (0.2-0.3) replays the full cosine decay down to
+    # end_value by where=0.3.
+    sched = CosineWithRestartsParamScheduler(
+        start_value=1.0,
+        end_value=0.0,
+        t_0=0.1,
+        t_mult=2.0,
+        restart_warmup_factor=0.2,
+        restart_warmup_frac=0.5,
+    )
+    # just after the restart: at the ramp's start value
+    assert sched(0.1 + 1e-9) == pytest.approx(0.2, abs=1e-3)
+    # linear midpoint of the ramp (where=0.15, local progress 0.25 of the cycle ->
+    # halfway through the ramp segment)
+    assert sched(0.15) == pytest.approx(0.6, abs=1e-3)  # halfway from 0.2 to 1.0
+    # ramp ends / decay begins: back at start_value
+    assert sched(0.2) == pytest.approx(1.0, abs=1e-3)
+    # decay's own midpoint (halfway between where=0.2 and where=0.3)
+    assert sched(0.25) == pytest.approx(_cosine(1.0, 0.0, 0.5), abs=1e-9)
+    # cycle 1 still fully bottoms out at end_value by its own end
+    assert sched(0.3 - 1e-9) == pytest.approx(0.0, abs=1e-3)

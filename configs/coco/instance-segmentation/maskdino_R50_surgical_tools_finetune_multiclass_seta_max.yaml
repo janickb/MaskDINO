@@ -38,6 +38,8 @@ SOLVER:
   COSINE_RESTARTS:
     T_0: 3200       # first cycle (iters); ~5 cycles tile MAX_ITER: 3200+6400+12800+25600+51200=99200
     T_MULT: 2.0     # classic SGDR: each cycle 2x the last
+    RESTART_WARMUP_FACTOR: 0.3      # restart ramps from 30% of BASE_LR instead of snapping to it
+    RESTART_WARMUP_FRACTION: 0.05   # over the first 5% of each restart cycle
 TEST:
   EVAL_PERIOD: 2000
 OUTPUT_DIR: "runs/20260910_multi_class_seta_max"
