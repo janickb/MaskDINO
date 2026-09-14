@@ -60,7 +60,7 @@ def build_transform_gen(cfg, is_train):
             T.RandomRotation(
                 angle=list(cfg.INPUT.ROTATION_ANGLES),
                 expand=cfg.INPUT.ROTATION_EXPAND,
-                sample_style="range",
+                sample_style="choice",
             )
         )
 
