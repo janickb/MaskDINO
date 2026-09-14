@@ -1,9 +1,9 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-"""Live-pool counterpart of register_hdf5_instance.py: registers the "train"
+"""Live-pool counterpart of register_hdf5_instance.py: registers a "train_<set>"
 split as a LivePoolDataset over sgdata's continuously-replenished image pool
 (see scene_generator's src/sgdata/pool.py) instead of a static glob'd
-directory. Opt-in via _POOL_DIR below - see register_hdf5_instance.py's
-register_all_hdf5_instances for the dispatch between this and the static path.
+directory. See register_hdf5_instance.py's _TRAIN_POOL_DIRS / register_all_hdf5_instances
+for the set-name -> pool-dir table and the opt-in registration loop.
 """
 
 import json
@@ -17,19 +17,20 @@ from sgdata import pool, schema
 from ..class_mapping import apply_class_mapping_to_metadata, derive_class_mapping
 from .live_pool_dataset import LivePoolDataset
 
-# Live-pool training set (opt-in): set _POOL_DIR below to enable it - the
-# "train" split is then registered as a LivePoolDataset over that
-# continuously-replenished directory instead of the static path in
-# register_hdf5_instance.py. None disables live-pool training entirely (the
-# default). "val" always stays static/pinned regardless of this - scoring
-# against a shifting pool would make eval runs incomparable.
-_POOL_DIR = "/home/janick.bilang/training/images/pool_1024x1024_setb_train"
+# "val" always stays static/pinned regardless of the pool - scoring against a
+# shifting pool would make eval runs incomparable.
 _POOL_VIRTUAL_SIZE = (
     1024  # order-of-magnitude match to scene_generator's image_pool.cap
 )
 _POOL_MIN_FILES = (
     50  # block dataset registration until the pool has at least this many frames
 )
+
+
+def pool_has_frames(pool_dir):
+    """Non-blocking peek, used to skip registering a not-yet-rendered pool
+    variant instead of paying _wait_for_one_frame's blocking wait for it."""
+    return bool(pool.list_pool_frames(pool_dir))
 
 
 def _wait_for_one_frame(pool_dir, timeout_s=1800.0):

@@ -17,18 +17,26 @@ from ..class_mapping import (
     remap_gt_category_ids,
 )
 from .register_hdf5_pool_instance import (
-    _POOL_DIR,
     _POOL_MIN_FILES,
     _POOL_VIRTUAL_SIZE,
+    pool_has_frames,
     register_hdf5_pool_instances,
 )
 
-_PREDEFINED_SPLITS = {
-    # name: dirname
-    # absolute paths, so os.path.join(root, dirname) below returns them as-is regardless
-    # of DETECTRON2_DATASETS/root
-    "train": "/home/janick.bilang/dev/scene_generator/output/valid",
-    "val": "/home/janick.bilang/training/images/20260808_1024x1024_valid_1000_setb",
+# --- Named data-set variants (e.g. seta/setb) ----------------------------------
+# Each key here is the exact name a config puts in DATASETS.TRAIN/TEST to select
+# that variant - no code change needed to switch between existing ones. Add a
+# new set by adding a dict entry (its name doesn't have to follow any pattern,
+# e.g. a val-only combined set could just be VAL_DIRS["val_setab"] = ...). A
+# variant with no rendered frames yet is skipped with a warning instead of
+# blocking/crashing `import maskdino`.
+_TRAIN_POOL_DIRS = {
+    "train_seta": "/home/janick.bilang/training/images/pool_1024x1024_seta_train",
+    "train_setb": "/home/janick.bilang/training/images/pool_1024x1024_setb_train",
+}
+_VAL_DIRS = {
+    "val_seta": "/home/janick.bilang/training/images/20260808_1024x1024_valid_1000_seta",
+    "val_setb": "/home/janick.bilang/training/images/20260808_1024x1024_valid_1000_setb",
 }
 
 # --- Phase-2 classifier-retrain splits ("reclassification mode") --------------
@@ -172,13 +180,26 @@ def register_hdf5_instances(name, hdf5_dir):
 
 
 def register_all_hdf5_instances(root):
-    for key, dirname in _PREDEFINED_SPLITS.items():
-        if key == "train" and _POOL_DIR:
-            register_hdf5_pool_instances(
-                key, _POOL_DIR, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES
+    """Registers every _TRAIN_POOL_DIRS/_VAL_DIRS entry under its dict key,
+    skipping (with a warning) whichever variant has no rendered frames yet -
+    e.g. a set that's still being generated - so that one not-yet-ready
+    variant can't break `import maskdino` for the others."""
+    log = logging.getLogger(__name__)
+    for name, pool_dir in _TRAIN_POOL_DIRS.items():
+        if not pool_has_frames(pool_dir):
+            log.warning(
+                "[%s] no frames yet in pool %s; skipping registration", name, pool_dir
             )
-        else:
-            register_hdf5_instances(key, os.path.join(root, dirname))
+            continue
+        register_hdf5_pool_instances(name, pool_dir, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES)
+    for name, val_dirname in _VAL_DIRS.items():
+        val_dir = os.path.join(root, val_dirname)
+        if _first_readable_hdf5(val_dir) is None:
+            log.warning(
+                "[%s] no readable frames under %s; skipping registration", name, val_dir
+            )
+            continue
+        register_hdf5_instances(name, val_dir)
     register_reclass_splits()
 
 

@@ -12,8 +12,8 @@ MODEL:
       HUNGARIAN_EVAL:
         ENABLED: True
 DATASETS:
-  TRAIN: ("train",)
-  TEST: ("val",)
+  TRAIN: ("train_seta",)
+  TEST: ("val_seta",)
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"
   IMAGE_SIZE: 1024
