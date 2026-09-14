@@ -38,6 +38,20 @@ def add_maskdino_config(cfg):
     cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FACTOR = 0.0  # start-of-restart LR, as a fraction of BASE_LR
     cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FRACTION = 0.0  # fraction of each restart cycle spent ramping
 
+    # Adaptive alternative to the fixed schedules above (maskdino/solver/plateau.py).
+    # Only consulted when SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau".
+    cfg.SOLVER.PLATEAU = CN()
+    cfg.SOLVER.PLATEAU.METRIC = "total_loss"  # EventStorage key to monitor
+    cfg.SOLVER.PLATEAU.MODE = "min"  # "min" for a loss-like metric, "max" for accuracy-like
+    cfg.SOLVER.PLATEAU.FACTOR = 0.5  # multiply LR by this on each reduction
+    cfg.SOLVER.PLATEAU.PATIENCE = 3  # checks with no improvement before reducing
+    cfg.SOLVER.PLATEAU.THRESHOLD = 1e-4  # min relative improvement to count as "improved"
+    cfg.SOLVER.PLATEAU.COOLDOWN = 0  # checks to wait after a reduction before resuming patience
+    # Floor for BASE_LR specifically; every param group (e.g. the backbone at
+    # BACKBONE_MULTIPLIER x BASE_LR) is floored at the same fraction of its own
+    # base, not this absolute number - see PlateauLRScheduler's docstring.
+    cfg.SOLVER.PLATEAU.MIN_LR = 0.0
+    cfg.SOLVER.PLATEAU.CHECK_PERIOD = 0  # iters between checks; 0 = disabled even if selected
 
     # MaskDINO model config
     cfg.MODEL.MaskDINO = CN()
