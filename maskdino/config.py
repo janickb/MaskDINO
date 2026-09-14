@@ -174,7 +174,7 @@ def add_maskdino_config(cfg):
     cfg.INPUT.MIN_VISIBILITY = 0.0
 
     cfg.INPUT.RANDOM_ROTATION = True
-    cfg.INPUT.ROTATION_ANGLES = [-180.0, 90.0, 0.0, 90, ]
+    cfg.INPUT.ROTATION_ANGLES = [-180.0, -90.0, 0.0, 90.0, ]
     # if False, keep the image size and let the corners rotate out of frame
     cfg.INPUT.ROTATION_EXPAND = False
 
