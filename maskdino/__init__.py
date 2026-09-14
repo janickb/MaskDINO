@@ -37,6 +37,10 @@ from .test_time_augmentation import SemanticSegmentorWithTTA
 # evaluation
 from .evaluation.instance_evaluation import InstanceSegEvaluator
 # solver
-from .solver import build_warmup_cosine_restarts_lr_scheduler
+from .solver import (
+    PlateauLRHook,
+    PlateauLRScheduler,
+    build_warmup_cosine_restarts_lr_scheduler,
+)
 # util
 from .utils import box_ops, misc, utils
