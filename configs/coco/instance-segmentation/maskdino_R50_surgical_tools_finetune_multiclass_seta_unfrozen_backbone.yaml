@@ -12,7 +12,7 @@ MODEL:
       HUNGARIAN_EVAL:
         ENABLED: True
   BACKBONE:
-    FREEZE_AT: 5
+    FREEZE_AT: 2
 DATASETS:
   TRAIN: ("train_seta",)
   TEST: ("val_seta",)
@@ -40,6 +40,6 @@ SOLVER:
 
 TEST:
   EVAL_PERIOD: 500
-OUTPUT_DIR: "runs/20260915_multi_class_seta_frozen"
+OUTPUT_DIR: "runs/20260915_multi_class_seta_unfrozen"
 DATALOADER:
   NUM_WORKERS: 2
