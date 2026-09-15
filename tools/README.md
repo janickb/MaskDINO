@@ -50,3 +50,17 @@ python tools/analyze_model.py --num-inputs 100 --tasks flop --config-file CONFIG
 ```
 
 Note that, for panoptic and instance segmentation, we compute the average flops over 100 real validation images.
+
+
+* `compare_backbone_weights.py`
+
+Tool to check whether a ResNet backbone actually stayed frozen (or how much it
+drifted) between two checkpoints, grouped by ResNet stage (stem/res2/res3/res4/res5).
+Optionally computes a linear-CKA functional-similarity score per stage from a
+folder of sample images.
+
+```
+python tools/compare_backbone_weights.py --finetuned runs/multi_class_seta_frozen_backbone/model_final.pth
+
+python tools/compare_backbone_weights.py --finetuned runs/multi_class_seta_unfrozen_backbone/model_final.pth --cka --image-dir /path/to/sample_images
+```
