@@ -31,15 +31,21 @@ INPUT:
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0003
-  LR_SCHEDULER_NAME: "WarmupCosineLR"   # smooth cosine decay instead of the x10 drop at 4000
-  BASE_LR_END: 0.000003                 # cosine floor = 1% of BASE_LR
-  MAX_ITER: 15000
-  CHECKPOINT_PERIOD: 1000
+  LR_SCHEDULER_NAME: "ReduceLROnPlateau"   # adaptive, metric-driven decay - not a fixed schedule
+  MAX_ITER: 20000
+  CHECKPOINT_PERIOD: 5000
   WARMUP_ITERS: 250
   WARMUP_FACTOR: 0.001 #added for carring optimizer state
-
+  PLATEAU:
+    METRIC: "total_loss"   # no validation loss in this pipeline; training loss instead
+    MODE: "min"
+    FACTOR: 0.5             # halve LR on each plateau, rather than PyTorch's default 10x cut
+    PATIENCE: 3              # checks (not iters) with no improvement before cutting
+    CHECK_PERIOD: 300        # iters between checks -> ~30 checks over MAX_ITER=15000
+    MIN_LR: 0.000002          # same floor the cosine version used, for comparability
+    THRESHOLD: 1e-2
 TEST:
   EVAL_PERIOD: 500
-OUTPUT_DIR: "runs/20260915_multi_class_seta_frozen"
+OUTPUT_DIR: "runs/20260915_multi_class_seta_frozen_plateauLR"
 DATALOADER:
   NUM_WORKERS: 2
