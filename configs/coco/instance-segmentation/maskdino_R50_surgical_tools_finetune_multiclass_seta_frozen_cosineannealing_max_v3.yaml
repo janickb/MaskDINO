@@ -39,7 +39,7 @@ SOLVER:
   WARMUP_FACTOR: 0.001 #added for carring optimizer state
 
 TEST:
-  EVAL_PERIOD: 500
+  EVAL_PERIOD: 2500
 OUTPUT_DIR: "runs/20260910_multi_class_seta_max_cosineannealing_v3"
 DATALOADER:
   NUM_WORKERS: 2
