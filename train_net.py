@@ -21,6 +21,7 @@ import itertools
 import logging
 import os
 import random
+import time
 import weakref
 from collections import OrderedDict
 from typing import Any
@@ -33,6 +34,8 @@ from detectron2.data import (
     build_detection_test_loader,
     build_detection_train_loader,
 )
+from detectron2.data.build import get_detection_dataset_dicts
+from detectron2.data.samplers import TrainingSampler
 from detectron2.engine import (
     AMPTrainer,
     DefaultTrainer,
@@ -276,42 +279,28 @@ class Trainer(DefaultTrainer):
             return build_detection_train_loader(cfg, mapper=mapper)
         # instance segmentation read directly from .hdf5 frames
         elif cfg.INPUT.DATASET_MAPPER_NAME == "hdf5_coco_instance":
-            import time as _t
-
-            from detectron2.data.build import get_detection_dataset_dicts
-            from detectron2.data.samplers import TrainingSampler
-
-            print("[DEBUG] building Hdf5CocoInstanceDatasetMapper", flush=True)
+            logger = logging.getLogger("detectron2.trainer")
             mapper = Hdf5CocoInstanceDatasetMapper(cfg, True)
-            print("[DEBUG] mapper built", flush=True)
-
-            _t0 = _t.time()
+            t0 = time.time()
             dataset = get_detection_dataset_dicts(
                 cfg.DATASETS.TRAIN,
                 filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
             )
-            print(
-                f"[DEBUG] get_detection_dataset_dicts returned in {_t.time() - _t0:.2f}s, type={type(dataset)}",
-                flush=True,
-            )
-
-            _t0 = _t.time()
             n = len(dataset)
-            print(f"[DEBUG] len(dataset)={n} took {_t.time() - _t0:.2f}s", flush=True)
-
-            _t0 = _t.time()
-            sampler = TrainingSampler(n, seed=cfg.SEED)
-            print(
-                f"[DEBUG] TrainingSampler built in {_t.time() - _t0:.2f}s", flush=True
+            logger.debug(
+                "get_detection_dataset_dicts returned %d dicts in %.2fs", n, time.time() - t0
             )
+            mapper.set_copy_paste_sources(dataset)
+            t0 = time.time()
+            sampler = TrainingSampler(n, seed=cfg.SEED)
+            logger.debug("TrainingSampler built in %.2fs", time.time() - t0)
 
-            _t0 = _t.time()
+            t0 = time.time()
             loader = build_detection_train_loader(
                 cfg, dataset=dataset, mapper=mapper, sampler=sampler
             )
-            print(
-                f"[DEBUG] build_detection_train_loader returned in {_t.time() - _t0:.2f}s",
-                flush=True,
+            logger.debug(
+                "build_detection_train_loader returned in %.2fs", time.time() - t0
             )
             return loader
         else:
