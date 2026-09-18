@@ -25,23 +25,26 @@ INPUT:
 
 # Extension of the 90k run in runs/multi_class_v1 (segm/bbox AP still rising
 # at 90k). Resuming on 4 GPUs at 1 img/GPU, LR scaled linearly with batch
-# size (2->4). Cosine LR decay from BASE_LR to a 1% floor over MAX_ITER.
+# size (2->4). Adaptive plateau-based decay instead of a fixed schedule: cuts
+# BASE_LR only when training loss stops improving (see maskdino/solver/plateau.py).
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0003
-  LR_SCHEDULER_NAME: "WarmupCosineLR"   # SGDR: repeating cosine cycles, not one decay
-  BASE_LR_END: 0.0000003                 # cosine floor of every cycle = 0.1% of BASE_LR
-  MAX_ITER: 200000
-  CHECKPOINT_PERIOD: 10000
+  LR_SCHEDULER_NAME: "ReduceLROnPlateau"   # adaptive, metric-driven decay - not a fixed schedule
+  MAX_ITER: 15000
+  CHECKPOINT_PERIOD: 5000
   WARMUP_ITERS: 250
   WARMUP_FACTOR: 0.001 #added for carring optimizer state
-  # COSINE_RESTARTS:
-  #   T_0: 3200       # first cycle (iters); ~5 cycles tile MAX_ITER: 3200+6400+12800+25600+51200=99200
-  #   T_MULT: 2.0     # classic SGDR: each cycle 2x the last
-  #   RESTART_WARMUP_FACTOR: 0.3      # restart ramps from 30% of BASE_LR instead of snapping to it
-  #   RESTART_WARMUP_FRACTION: 0.05   # over the first 5% of each restart cycle
+  PLATEAU:
+    METRIC: "total_loss"   # no validation loss in this pipeline; training loss instead
+    MODE: "min"
+    FACTOR: 0.3             # halve LR on each plateau, rather than PyTorch's default 10x cut
+    PATIENCE: 3              # checks (not iters) with no improvement before cutting
+    CHECK_PERIOD: 200        # iters between checks -> ~30 checks over MAX_ITER=15000
+    MIN_LR: 0.00002          # same floor the cosine version used, for comparability
+    THRESHOLD: 2e-2
 TEST:
-  EVAL_PERIOD: 2000
-OUTPUT_DIR: "runs/20260910_multi_class_seta_max"
+  EVAL_PERIOD: 1000
+OUTPUT_DIR: "runs/20260910_multi_class_seta_plateau_test_aggresiv_v2"
 DATALOADER:
   NUM_WORKERS: 2
