@@ -69,6 +69,8 @@ from maskdino import (
     Hdf5CocoInstanceDatasetMapper,
     InstanceSegEvaluator,
     MaskFormerSemanticDatasetMapper,
+    PlateauLRHook,
+    PlateauLRScheduler,
     SemanticSegmentorWithTTA,
     add_maskdino_config,
     build_warmup_cosine_restarts_lr_scheduler,
@@ -318,15 +320,52 @@ class Trainer(DefaultTrainer):
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
         """
-        It now calls :func:`detectron2.solver.build_lr_scheduler`, except for the
-        "WarmupCosineRestartsLR" name (SGDR - not a stock detectron2 scheduler; see
-        maskdino/solver/lr_scheduler.py), which detectron2's own builder would
-        otherwise reject with ValueError.
+        It now calls :func:`detectron2.solver.build_lr_scheduler`, except for two
+        names that aren't stock detectron2 schedulers (both would otherwise be
+        rejected with ValueError by detectron2's own builder):
+          - "WarmupCosineRestartsLR": SGDR, see maskdino/solver/lr_scheduler.py.
+          - "ReduceLROnPlateau": adaptive, metric-driven decay - see
+            maskdino/solver/plateau.py. Drives the usual SOLVER.WARMUP_ITERS /
+            WARMUP_FACTOR ramp itself (ReduceLROnPlateau has no such concept), then
+            hands off to a PlateauLRHook registered in build_hooks() below, which
+            drives everything after that at SOLVER.PLATEAU.CHECK_PERIOD cadence.
         Overwrite it if you'd like a different scheduler.
         """
         if cfg.SOLVER.LR_SCHEDULER_NAME == "WarmupCosineRestartsLR":
             return build_warmup_cosine_restarts_lr_scheduler(cfg, optimizer)
+        if cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
+            p = cfg.SOLVER.PLATEAU
+            return PlateauLRScheduler(
+                optimizer,
+                mode=p.MODE,
+                factor=p.FACTOR,
+                patience=p.PATIENCE,
+                threshold=p.THRESHOLD,
+                cooldown=p.COOLDOWN,
+                min_lr_fraction=p.MIN_LR / cfg.SOLVER.BASE_LR,
+                warmup_iters=cfg.SOLVER.WARMUP_ITERS,
+                warmup_factor=cfg.SOLVER.WARMUP_FACTOR,
+            )
         return build_lr_scheduler(cfg, optimizer)
+
+    def build_hooks(self):
+        """
+        Adds PlateauLRHook on top of the stock hook list when
+        SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau" - it's the hook that
+        actually drives self.scheduler (a PlateauLRScheduler)'s LR changes, since
+        that scheduler's own per-iteration step() (called by detectron2's stock
+        hooks.LRScheduler, already in the list from super()) is a no-op by design.
+        """
+        ret = super().build_hooks()
+        if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
+            ret.append(
+                PlateauLRHook(
+                    self.scheduler,
+                    self.cfg.SOLVER.PLATEAU.METRIC,
+                    self.cfg.SOLVER.PLATEAU.CHECK_PERIOD,
+                )
+            )
+        return ret
 
     @classmethod
     def build_optimizer(cls, cfg, model):
@@ -336,6 +375,21 @@ class Trainer(DefaultTrainer):
         defaults = {}
         defaults["lr"] = cfg.SOLVER.BASE_LR
         defaults["weight_decay"] = cfg.SOLVER.WEIGHT_DECAY
+
+        # classifier-retrain with the decoder unfrozen: the linear class head keeps
+        # BASE_LR, the (pretrained) decoder + its prediction heads train gentler.
+        cr = cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN
+        decoder_lr_mult = (
+            cr.DECODER_LR_MULTIPLIER
+            if cr.ENABLED and cr.UNFREEZE_DECODER
+            else 1.0
+        )
+        decoder_lr_prefixes = (
+            "sem_seg_head.predictor.decoder",
+            "sem_seg_head.predictor.mask_embed",
+            "sem_seg_head.predictor.bbox_embed",
+            "sem_seg_head.predictor._bbox_embed",
+        )
 
         norm_module_types = (
             torch.nn.BatchNorm1d,

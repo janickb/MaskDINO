@@ -6,11 +6,13 @@ MODEL:
     # from the registered dataset's effective class count.
     NUM_CLASSES: -1
   MaskDINO:
-    NUM_OBJECT_QUERIES: 64
+    NUM_OBJECT_QUERIES: 100
     TEST:
       NMS_IOU: 0.5
       HUNGARIAN_EVAL:
         ENABLED: True
+  BACKBONE:
+    FREEZE_AT: 2
 DATASETS:
   TRAIN: ("train_seta",)
   TEST: ("val_seta",)
@@ -29,17 +31,15 @@ INPUT:
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0003
-  LR_SCHEDULER_NAME: "WarmupCosineRestartsLR"   # SGDR: repeating cosine cycles, not one decay
-  BASE_LR_END: 0.000003                 # cosine floor of every cycle = 1% of BASE_LR
-  MAX_ITER: 15000
-  CHECKPOINT_PERIOD: 1000
+  LR_SCHEDULER_NAME: "WarmupCosineLR"   # smooth cosine decay instead of the x10 drop at 4000
+  BASE_LR_END: 3.0e-07                 # cosine floor = 1% of BASE_LR
+  MAX_ITER: 150000
+  CHECKPOINT_PERIOD: 10000
   WARMUP_ITERS: 250
   WARMUP_FACTOR: 0.001 #added for carring optimizer state
-  COSINE_RESTARTS:
-    T_0: 480        # first cycle (iters); ~5 cycles tile MAX_ITER: 480+960+1920+3840+7680=14880
-    T_MULT: 2.0
+
 TEST:
-  EVAL_PERIOD: 500
-OUTPUT_DIR: "runs/20260910_multi_class_seta_64_queries"
+  EVAL_PERIOD: 2500
+OUTPUT_DIR: "runs/20260910_multi_class_seta_max_cosineannealing_v3"
 DATALOADER:
   NUM_WORKERS: 2
