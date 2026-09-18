@@ -8,7 +8,7 @@ _BASE_: maskdino_R50_surgical_tools_reclassify.yaml
 # set-A instruments have class-agnostic recall ~0.0-0.5 - the frozen decoder does
 # not even localize them, so a class-head-only retrain cannot recover them.
 #
-# Because the decoder is trainable, CLASSIFIER_RETRAIN no longer forces a
+# Because the decoder is trainable, RECLASSIFY_FINETUNE no longer forces a
 # labels-only loss: mask + box losses and deep supervision come back so the
 # decoder is anchored on segmentation quality (see maskdino/maskdino.py).
 #
@@ -20,15 +20,32 @@ MODEL:
     DROPOUT: 0.0                      # keep the train/eval-equivalence assumption
                                      # (maskdino.py NOTE ~L283); revisit if the
                                      # eval curve shows overfitting
-    CLASSIFIER_RETRAIN:
+    RECLASSIFY_FINETUNE:
       ENABLED: True
       UNFREEZE_DECODER: True
       DECODER_LR_MULTIPLIER: 0.1     # decoder effective LR = 5e-5
+DATASETS:
+  # Validation moved off the reclass set entirely (see TEST below), so the
+  # angle-parity held-out half (reclass_val) is no longer needed for
+  # validation and can go into TRAIN too - the full 20 imgs/instrument
+  # (2 sides x 10 rotation steps) instead of just the 10 odd-angle ones.
+  # Safe only because this config's own TEST no longer reads reclass_val -
+  # do NOT do this in the base reclassify.yaml, whose default TEST still is
+  # reclass_val (used by other configs, e.g. the reclassify_v2 baseline).
+  TRAIN: ("reclass_train", "reclass_val")
+  # Dense multi-instrument set-A validation instead of reclass_val's 10
+  # sparse single-instrument renders/class (5 held-out angles x 2 sides) - a
+  # much more realistic signal, at the cost of a much slower periodic eval
+  # below (registered against the unified reclass class mapping - see
+  # register_val_seta_setb_reclass - so it lines up with this 16-class head).
+  TEST: ("val_seta_reclass",)
 SOLVER:
   BASE_LR: 0.0005                    # linear class head; decoder via multiplier
   BASE_LR_END: 0.000005
-  MAX_ITER: 1000
+  MAX_ITER: 5000
   CHECKPOINT_PERIOD: 500             # keep an iter-500 checkpoint to fall back to
 TEST:
-  EVAL_PERIOD: 100                   # watch for decoder drift / overfit early
-OUTPUT_DIR: "runs/reclassify_unfreeze_decoder_v1"
+  # val_seta_reclass has 1000 images (vs reclass_val's 150) - every-100-iter
+  # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
+  EVAL_PERIOD: 250                   # watch for decoder drift / overfit early
+OUTPUT_DIR: "runs/reclassify_unfreeze_decoder_fullValSet_v1"
