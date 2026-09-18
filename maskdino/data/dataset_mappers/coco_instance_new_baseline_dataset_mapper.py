@@ -55,12 +55,19 @@ def build_transform_gen(cfg, is_train):
     # holder does not exist, so RandomFlip teaches the model invalid shapes.
     # Rotation keeps every instrument physically valid while covering the
     # arbitrary in-plane orientations the camera sees.
+    #
+    # sample_style="choice" (not "range"): ROTATION_ANGLES is a discrete set
+    # (default [0,90,180,270]) picked via np.random.choice, not a [min,max]
+    # interval. On a square canvas these four are lossless pixel permutations -
+    # no interpolation, so no blur/misalignment between the image and its
+    # segmentation masks, and (with ROTATION_EXPAND=False) no black-corner fill,
+    # unlike an arbitrary continuous angle.
     if cfg.INPUT.RANDOM_ROTATION:
         augmentation.append(
             T.RandomRotation(
                 angle=list(cfg.INPUT.ROTATION_ANGLES),
                 expand=cfg.INPUT.ROTATION_EXPAND,
-                sample_style="range",
+                sample_style="choice",
             )
         )
 

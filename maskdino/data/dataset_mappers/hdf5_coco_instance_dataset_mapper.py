@@ -14,6 +14,7 @@ from detectron2.data import transforms as T
 from detectron2.structures import BitMasks
 from sgdata import schema
 
+from ..augmentations import CopyPasteCompositor
 from .coco_instance_new_baseline_dataset_mapper import build_transform_gen
 
 __all__ = ["Hdf5CocoInstanceDatasetMapper"]
@@ -41,6 +42,8 @@ class Hdf5CocoInstanceDatasetMapper:
         tfm_gens,
         image_format,
         min_visibility=0.0,
+        copy_paste_enabled=False,
+        copy_paste_kwargs=None,
     ):
         self.tfm_gens = tfm_gens
         logging.getLogger(__name__).info(
@@ -50,6 +53,13 @@ class Hdf5CocoInstanceDatasetMapper:
         self.img_format = image_format
         self.is_train = is_train
         self.min_visibility = min_visibility
+
+        # Copy-paste compositing (see set_copy_paste_sources): needs the full list of
+        # dataset dicts to sample paste sources from, which isn't known until the
+        # dataloader is built (train_net.py), so construction is deferred.
+        self._copy_paste_enabled = copy_paste_enabled
+        self._copy_paste_kwargs = copy_paste_kwargs or {}
+        self._copy_paste = None
 
     @classmethod
     def from_config(cls, cfg, is_train=True):
@@ -71,8 +81,29 @@ class Hdf5CocoInstanceDatasetMapper:
             "tfm_gens": tfm_gens,
             "image_format": cfg.INPUT.FORMAT,
             "min_visibility": cfg.INPUT.MIN_VISIBILITY,
+            # Force-disabled at eval time regardless of the flag - only training
+            # frames get composited.
+            "copy_paste_enabled": is_train and cfg.INPUT.COPY_PASTE.ENABLED,
+            "copy_paste_kwargs": {
+                "min_instances": cfg.INPUT.COPY_PASTE.MIN_INSTANCES,
+                "max_instances": cfg.INPUT.COPY_PASTE.MAX_INSTANCES,
+                "rotation_degrees": cfg.INPUT.COPY_PASTE.ROTATION_DEGREES,
+                "mask_interp": tuple(cfg.INPUT.COPY_PASTE.MASK_INTERP),
+                "blend_modes": tuple(cfg.INPUT.COPY_PASTE.BLEND_MODES),
+                "blur_kernel_range": tuple(cfg.INPUT.COPY_PASTE.BLUR_KERNEL_RANGE),
+                "feather_width_range": tuple(cfg.INPUT.COPY_PASTE.FEATHER_WIDTH_RANGE),
+                "core_margin_px": cfg.INPUT.COPY_PASTE.CORE_MARGIN_PX,
+                "image_format": cfg.INPUT.FORMAT,
+            },
         }
         return ret
+
+    def set_copy_paste_sources(self, dataset_dicts):
+        """Wire the full training dataset-dict list in as copy-paste sources. Call
+        once, right after the dataset list is resolved in train_net.py's"""
+        if not self._copy_paste_enabled:
+            return
+        self._copy_paste = CopyPasteCompositor(dataset_dicts, **self._copy_paste_kwargs)
 
     def __call__(self, dataset_dict):
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
@@ -97,6 +128,11 @@ class Hdf5CocoInstanceDatasetMapper:
         if self.img_format == "BGR":
             image = image[:, :, ::-1]
         image = np.ascontiguousarray(image)
+
+        if self.is_train and self._copy_paste is not None:
+            image, dataset_dict["annotations"] = self._copy_paste(
+                image, dataset_dict["annotations"]
+            )
 
         utils.check_image_size(dataset_dict, image)
 

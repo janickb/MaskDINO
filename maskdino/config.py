@@ -155,9 +155,41 @@ def add_maskdino_config(cfg):
     cfg.INPUT.MIN_VISIBILITY = 0.0
 
     cfg.INPUT.RANDOM_ROTATION = True
-    cfg.INPUT.ROTATION_ANGLES = [-180.0, 90.0, 0.0, 90, ]
+
+
+    cfg.INPUT.ROTATION_ANGLES = [0.0, 90.0, 180.0, 270.0]
     # if False, keep the image size and let the corners rotate out of frame
     cfg.INPUT.ROTATION_EXPAND = False
+
+    # Copy-paste compositing (reclassify phase only): pastes x amount other reclass_train
+    # instances' instrument crops onto the destination image before build_transform_gen
+    # runs. Combines MBOI's (Badilla-Solorzano et al., IJCARS 2022) foreground cut-and-
+    # paste with Cut, Paste and Learn's (Dwibedi et al., arXiv:1708.01642) per-instance
+    # randomized blend mode. Default OFF - every non-reclassify config is unaffected.
+    cfg.INPUT.COPY_PASTE = CN()
+    cfg.INPUT.COPY_PASTE.ENABLED = False
+    cfg.INPUT.COPY_PASTE.MIN_INSTANCES = 0
+    cfg.INPUT.COPY_PASTE.MAX_INSTANCES = 10
+    cfg.INPUT.COPY_PASTE.ROTATION_DEGREES = 30.0   # theta ~ U(-this, +this); MBOI uses U(-90,90); raw images already in 36 deg sampled
+    # Randomized per pasted instance, like BLEND_MODES - a plain string would silently
+    # iterate its characters instead of being treated as one choice (tuple("nearest")),
+    # so this must be a list even to pick "nearest" every time.
+    cfg.INPUT.COPY_PASTE.MASK_INTERP = ["linear", "bicubic","lanczos"]  # any of "nearest" | "linear" | "bicubic" | "lanczos"
+    # Blend mode randomized per pasted instance (Cut/Paste/Learn's "All Blend", best in
+    # their ablation). "poisson" (gradient-domain/seamless cloning) is implemented
+    # (CopyPasteCompositor._blend_poisson) but deliberately left out of this default
+    # list - their ablation found it hurts on average - it's opt-in: add "poisson"
+    # here for your own A/B experiments on possible color-shift robustness gains.
+    cfg.INPUT.COPY_PASTE.BLEND_MODES = ["none", "gaussian_blur_edge", "box_blur"] # "alpha_feather"
+    cfg.INPUT.COPY_PASTE.BLUR_KERNEL_RANGE = [3, 7]
+    cfg.INPUT.COPY_PASTE.FEATHER_WIDTH_RANGE = [2, 7]
+    # gaussian_blur_edge/box_blur/alpha_feather all ramp symmetrically around the
+    # true boundary, so a large kernel/width can bleed the softening well into the
+    # object's own interior - blurring/eroding a thin instrument's real appearance.
+    # This caps how many px inward the softening may ever reach (0 disables the
+    # cap, restoring the old symmetric-ramp behavior); the outward (into-
+    # background) side is unaffected.
+    cfg.INPUT.COPY_PASTE.CORE_MARGIN_PX = 2
 
     # point loss configs
     # Number of points sampled during training for a mask point head.

@@ -13,7 +13,7 @@ MODEL:
   # Phase-1 set-B checkpoint re-indexed to the 16-class reclass label space:
   #   ./.venv/bin/python tools/adapt_classifier_checkpoint.py \
   #     --src runs/multi_class_setb_live_pool_real_size_4/model_final.pth --src-legacy-raw
-  WEIGHTS: "runs/multi_class_setb_live_pool_real_size_4/model_final_reclass16.pth"
+  WEIGHTS: "runs/20260915_multi_class_seta_frozen_plateauLR/model_final.pth"
   SEM_SEG_HEAD:
     NUM_CLASSES: -1   # derived from reclass_train (-> N=16); see class_mapping.py
   MaskDINO:
@@ -31,11 +31,27 @@ DATASETS:
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"
   IMAGE_SIZE: 1024
-  MIN_SCALE: 0.8
-  MAX_SCALE: 1.2
-  MIN_VISIBILITY: 0.0
+  # No scale jitter: raw frames are already 1024x1024 (== IMAGE_SIZE), so scale=1.0
+  # makes ResizeScale/FixedSizeCrop a lossless no-op - no shrink-then-pad, so no
+  # artificial padding region for the downstream photometric augmentations to
+  # recolor (compounds with ROTATION_ANGLES being 0/90/180/270 - see config.py).
+  MIN_SCALE: 1.0
+  MAX_SCALE: 1.0
+  # Was 0.0. Copy-paste occlusion (below) reuses this same field to drop instances
+  # that lose too much area to a later paste - see COPY_PASTE - but raising it also
+  # newly filters reclass_train's own original low-visibility instances, not just
+  # paste-occluded ones.
+  MIN_VISIBILITY: 0.5
   MIN_SIZE_TEST: 1024
   MAX_SIZE_TEST: 1024
+  # Combines several sparse single-instrument renders into one busier composite
+  # (MBOI, Badilla-Solorzano et al. 2022) with randomized paste-edge blending
+  # (Cut, Paste and Learn, Dwibedi et al., arXiv:1708.01642). See maskdino/config.py
+  # and maskdino/data/copy_paste.py.
+  COPY_PASTE:
+    ENABLED: True
+    MIN_INSTANCES: 0
+    MAX_INSTANCES: 10
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0005        # a single linear head tolerates a higher LR than the full model
