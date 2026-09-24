@@ -3,7 +3,6 @@ import glob
 import json
 import logging
 import os
-import re
 
 import h5py
 
