@@ -24,11 +24,13 @@ MODEL:
       ENABLED: True
       UNFREEZE_DECODER: True
       DECODER_LR_MULTIPLIER: 0.1     # decoder effective LR = 5e-5
+      UNFREEZE_ENCODER: True
+      ENCODER_LR_MULTIPLIER: 0.1
     TEST:
       HUNGARIAN_EVAL:
-        PERIOD: 2000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
+        PERIOD: 1000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
 TEST:
   # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
   # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
-  EVAL_PERIOD: 1000                   # watch for decoder drift / overfit early
-OUTPUT_DIR: "runs/reclassify_unfreeze_decoder_fullValSet_v2"
+  EVAL_PERIOD: 250                   # watch for decoder drift / overfit early
+OUTPUT_DIR: "runs/reclassify_unfreeze_encoder_decoder_v1"
