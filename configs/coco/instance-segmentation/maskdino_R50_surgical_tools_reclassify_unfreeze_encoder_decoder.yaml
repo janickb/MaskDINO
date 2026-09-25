@@ -28,7 +28,7 @@ MODEL:
       HUNGARIAN_EVAL:
         PERIOD: 2000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
 SOLVER:
-  IMS_PER_BATCH: 3
+  IMS_PER_BATCH: 6
   BASE_LR: 0.00001
 
 TEST:

@@ -73,6 +73,7 @@ from maskdino import (
     PlateauLRHook,
     PlateauLRScheduler,
     SemanticSegmentorWithTTA,
+    ValidationLossHook,
     add_maskdino_config,
     apply_test_sample_stride,
     assert_train_test_class_mapping_consistent,
@@ -331,6 +332,22 @@ class Trainer(DefaultTrainer):
         return build_detection_test_loader(cfg, dataset_name)
 
     @classmethod
+    def build_val_loss_loader(cls, cfg, dataset_name):
+        """Like build_test_loader(), but with an is_train=True mapper so GT
+        "instances" are attached - required by ValidationLossHook, since the
+        model only takes the loss branch (vs. inference) when self.training is
+        True, and that branch reads batched_inputs[0]["instances"] (see
+        maskdino/solver/val_loss.py). Only wired up for hdf5_coco_instance - the
+        mapper the reclassify configs actually use.
+        """
+        assert cfg.INPUT.DATASET_MAPPER_NAME == "hdf5_coco_instance", (
+            f"VAL_LOSS only supports DATASET_MAPPER_NAME=hdf5_coco_instance, "
+            f"got {cfg.INPUT.DATASET_MAPPER_NAME!r}"
+        )
+        mapper = Hdf5CocoInstanceDatasetMapper(cfg, True)
+        return build_detection_test_loader(cfg, dataset_name, mapper=mapper)
+
+    @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
         """
         It now calls :func:`detectron2.solver.build_lr_scheduler`, except for two
@@ -377,6 +394,11 @@ class Trainer(DefaultTrainer):
         not the bbox/segm AP that SOLVER.PLATEAU/TensorBoard actually track - so it
         doesn't need to run as often. See build_evaluator()'s include_coco/
         include_hungarian params.
+
+        Also adds ValidationLossHook when MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED -
+        logs "validation_loss" (+ "val_<component>") to EventStorage at
+        TEST.EVAL_PERIOD cadence, using the exact same loss function training
+        does, just evaluated on DATASETS.TEST[0] - see maskdino/solver/val_loss.py.
         """
         ret = super().build_hooks()
         if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
@@ -416,6 +438,10 @@ class Trainer(DefaultTrainer):
                 hooks.EvalHook(self.cfg.TEST.EVAL_PERIOD, cheap_test_and_save_results),
                 hooks.EvalHook(he.PERIOD, hungarian_test_and_save_results),
             ]
+
+        if self.cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED:
+            val_loader = self.build_val_loss_loader(self.cfg, self.cfg.DATASETS.TEST[0])
+            ret.append(ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader))
 
         return ret
 

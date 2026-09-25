@@ -44,6 +44,7 @@ from .evaluation.instance_evaluation import InstanceSegEvaluator
 from .solver import (
     PlateauLRHook,
     PlateauLRScheduler,
+    ValidationLossHook,
     build_warmup_cosine_restarts_lr_scheduler,
 )
 # util
