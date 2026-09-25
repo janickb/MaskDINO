@@ -428,20 +428,9 @@ class Trainer(DefaultTrainer):
         defaults["lr"] = cfg.SOLVER.BASE_LR
         defaults["weight_decay"] = cfg.SOLVER.WEIGHT_DECAY
 
-        # reclassify-finetune with the decoder/encoder unfrozen: the linear class
-        # head keeps BASE_LR, the (pretrained) decoder/encoder train gentler.
+        # reclassify-finetune with the encoder unfrozen: the linear class head
+        # keeps BASE_LR, the (pretrained) encoder trains gentler.
         rf = cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE
-        decoder_lr_mult = (
-            rf.DECODER_LR_MULTIPLIER
-            if rf.ENABLED and rf.UNFREEZE_DECODER
-            else 1.0
-        )
-        decoder_lr_prefixes = (
-            "sem_seg_head.predictor.decoder",
-            "sem_seg_head.predictor.mask_embed",
-            "sem_seg_head.predictor.bbox_embed",
-            "sem_seg_head.predictor._bbox_embed",
-        )
         encoder_lr_mult = (
             rf.ENCODER_LR_MULTIPLIER
             if rf.ENABLED and rf.UNFREEZE_ENCODER
@@ -479,8 +468,6 @@ class Trainer(DefaultTrainer):
                     hyperparams["lr"] = (
                         hyperparams["lr"] * cfg.SOLVER.BACKBONE_MULTIPLIER
                     )
-                if decoder_lr_mult != 1.0 and module_name.startswith(decoder_lr_prefixes):
-                    hyperparams["lr"] = hyperparams["lr"] * decoder_lr_mult
                 if encoder_lr_mult != 1.0 and module_name.startswith(encoder_lr_prefixes):
                     hyperparams["lr"] = hyperparams["lr"] * encoder_lr_mult
                 if (

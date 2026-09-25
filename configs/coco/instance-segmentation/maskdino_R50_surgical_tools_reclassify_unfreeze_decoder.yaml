@@ -3,8 +3,7 @@ _BASE_: maskdino_R50_surgical_tools_reclassify.yaml
 # the transformer DECODER is unfrozen too - not just the linear class head. The
 # ResNet backbone and the MSDeformAttn pixel encoder (sem_seg_head.pixel_decoder)
 # stay frozen; the DINO decoder layers + the mask/box prediction heads they drive
-# train at BASE_LR * DECODER_LR_MULTIPLIER while class_embed keeps the full
-# BASE_LR. Motivation: in the frozen-decoder baseline (runs/reclassify_v2) the
+# train at BASE_LR, same as class_embed. Motivation: in the frozen-decoder baseline (runs/reclassify_v2) the
 # set-A instruments have class-agnostic recall ~0.0-0.5 - the frozen decoder does
 # not even localize them, so a class-head-only retrain cannot recover them.
 #
@@ -23,7 +22,6 @@ MODEL:
     RECLASSIFY_FINETUNE:
       ENABLED: True
       UNFREEZE_DECODER: True
-      DECODER_LR_MULTIPLIER: 0.1     # decoder effective LR = 5e-5
     TEST:
       HUNGARIAN_EVAL:
         PERIOD: 2000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)

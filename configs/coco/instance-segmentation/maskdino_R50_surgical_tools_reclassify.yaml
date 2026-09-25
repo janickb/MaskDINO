@@ -58,9 +58,9 @@ INPUT:
     BLEND_MODES: ["none", "gaussian_blur_edge", "box_blur"] # "alpha_feather"
 SOLVER:
   IMS_PER_BATCH: 6
-  BASE_LR: 0.00005        # a single linear head tolerates a higher LR than the full model
+  BASE_LR: 0.00001        # a single linear head tolerates a higher LR than the full model
   LR_SCHEDULER_NAME: "WarmupCosineLR"   # SGDR: one warm restart, not a single decay
-  BASE_LR_END: 0.0000005                 # cosine floor of every cycle = 1% of BASE_LR
+  BASE_LR_END: 0.00000005                 # cosine floor of every cycle = 1% of BASE_LR
   MAX_ITER: 6000
   WARMUP_ITERS: 1000
   WARMUP_FACTOR: 0.0001                  # real linear ramp; Base-COCO inherits 1.0 (= no ramp)
