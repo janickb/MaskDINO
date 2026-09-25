@@ -11,11 +11,13 @@ MODEL:
       NMS_IOU: 0.5
       HUNGARIAN_EVAL:
         ENABLED: True
+        PERIOD: 4000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
   BACKBONE:
     FREEZE_AT: 5
 DATASETS:
-  TRAIN: ("train_seta",)
-  TEST: ("val_seta",)
+  TRAIN: ("train_seta_mm",)
+  TEST: ("val_seta_mm",)
+  TEST_SAMPLE_STRIDE: 4               # periodic eval on every 4th val_seta image (1000 -> 250); override to 1 for a full-set pass
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"
   IMAGE_SIZE: 1024
@@ -45,7 +47,7 @@ SOLVER:
     MIN_LR: 0.000002          # same floor the cosine version used, for comparability
     THRESHOLD: 1e-2
 TEST:
-  EVAL_PERIOD: 500
-OUTPUT_DIR: "runs/20260915_multi_class_seta_frozen_plateauLR"
+  EVAL_PERIOD: 1000
+OUTPUT_DIR: "runs/phase1_training_seta_v1-0"
 DATALOADER:
-  NUM_WORKERS: 2
+  NUM_WORKERS: 4

@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 from detectron2.config import configurable
 from detectron2.layers import Conv2d, ShapeSpec, get_norm
@@ -359,7 +359,7 @@ class MaskDINOEncoder(nn.Module):
         ret["feature_order"] = cfg.MODEL.SEM_SEG_HEAD.FEATURE_ORDER
         return ret
 
-    @autocast(enabled=False)
+    @autocast("cuda", enabled=False)
     def forward_features(self, features, masks):
         """
         :param features: multi-scale features from the backbone

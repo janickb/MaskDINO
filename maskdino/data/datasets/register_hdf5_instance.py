@@ -3,7 +3,6 @@ import glob
 import json
 import logging
 import os
-import re
 
 import h5py
 
@@ -27,33 +26,27 @@ from .register_hdf5_pool_instance import (
 # Each key here is the exact name a config puts in DATASETS.TRAIN/TEST to select
 # that variant - no code change needed to switch between existing ones. Add a
 # new set by adding a dict entry (its name doesn't have to follow any pattern,
-# e.g. a val-only combined set could just be VAL_DIRS["val_setab"] = ...). A
+# e.g. a val-only combined set could just be VAL_DIRS["val_setab_mm"] = ...). A
 # variant with no rendered frames yet is skipped with a warning instead of
 # blocking/crashing `import maskdino`.
 _TRAIN_POOL_DIRS = {
-    "train_seta": "/home/janick.bilang/training/images/pool_1024x1024_seta_train",
-    "train_setb": "/home/janick.bilang/training/images/pool_1024x1024_setb_train",
+    "train_seta_mm": "/home/janick.bilang/training/images/train_phase1_pool_set_a_mm",
 }
 _VAL_DIRS = {
-    "val_seta": "/home/janick.bilang/training/images/20260808_1024x1024_valid_1000_seta",
-    "val_setb": "/home/janick.bilang/training/images/20260808_1024x1024_valid_1000_setb",
+    "val_seta_mm": "/home/janick.bilang/training/images/val_set_a_mm",
+    "val_setab_mm": "/home/janick.bilang/training/images/val_set_ab_mm",
 }
 
 # --- Phase-2 classifier-retrain splits ("reclassification mode") --------------
-# One scene_generator classification-mode set holding BOTH instrument sets
-# (deterministic single-instrument renders: 2 sides x 10 rotation steps = 20
-# imgs/instrument, filenames "<instrument>_<A|B>_<NNN>deg.hdf5"). It already
-# carries a unified `instrument_classes` list, so no merge / restamp. Classifier
-# mode omits `coco_annotations`, so they are built on the fly from
+# Each entry is a scene_generator classification-mode set holding BOTH instrument
+# sets (deterministic single-instrument renders: 2 sides x 10 rotation steps = 20
+# imgs/instrument, filenames "<instrument>_<A|B>_<NNN>deg.hdf5") and carrying its
+# own unified `instrument_classes` list, so no merge / restamp. Classifier mode
+# omits `coco_annotations`, so they are built on the fly from
 # instance_segmaps + instance_attribute_maps (same output as sgdata.backfill).
-# `reclass_train` / `reclass_val` are an angle-parity split of these frames
-# (both A/B sides land in each half).
-_RECLASS_DIR = "/home/janick.bilang/training/images/20260909_classification_setab"
-
-
-def _deg_of(path):
-    m = re.search(r"_(\d+)deg", os.path.basename(path))
-    return int(m.group(1)) if m else None
+_RECLASS_TRAIN_DIRS = {
+    "reclass_setab_mm": "/home/janick.bilang/training/images/train_phase2_set_ab_mm",
+}
 
 
 def _first_readable_hdf5(hdf5_dir):
@@ -61,6 +54,38 @@ def _first_readable_hdf5(hdf5_dir):
         if os.path.getsize(p) > 0:
             return p
     return None
+
+
+_dataset_dicts_cache = {}
+
+
+def _cached(name, build_fn):
+    """Wrap a zero-arg dataset-dict builder so DatasetCatalog.get(name) only pays the
+    HDF5 metadata scan once per process, instead of once per caller (test-loader build,
+    COCOEvaluator's json conversion, HungarianInstanceEvaluator's own GT index) on every
+    single periodic eval tick - DatasetCatalog.get() is not memoized by detectron2."""
+    def get():
+        if name not in _dataset_dicts_cache:
+            _dataset_dicts_cache[name] = build_fn()
+        return _dataset_dicts_cache[name]
+    return get
+
+
+def apply_test_sample_stride(cfg):
+    """Re-register each cfg.DATASETS.TEST dataset to keep only every
+    cfg.DATASETS.TEST_SAMPLE_STRIDE-th entry (sorted/cached order), in place under the
+    SAME name - every consumer (test loader, COCOEvaluator, HungarianInstanceEvaluator)
+    resolves GT purely via DatasetCatalog.get(dataset_name), so this is the one place
+    that needs to apply the stride for it to take effect everywhere. No-op when stride
+    <= 1 (the default)."""
+    stride = cfg.DATASETS.TEST_SAMPLE_STRIDE
+    if stride <= 1:
+        return
+    for name in cfg.DATASETS.TEST:
+        full = DatasetCatalog.get(name)
+        sampled = full[::stride]
+        DatasetCatalog.remove(name)
+        DatasetCatalog.register(name, lambda sampled=sampled: sampled)
 
 
 def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
@@ -105,31 +130,40 @@ def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
 
 
 def register_hdf5_slice(name, hdf5_dir, keep=None):
-    """register_hdf5_instances for one dir + an optional path filter."""
+    """register_hdf5_instances for one dir + an optional path filter. Derives its
+    own ClassMapping from its own embedded instrument_classes."""
     with h5py.File(_first_readable_hdf5(hdf5_dir), "r") as f:
         instrument_classes = json.loads(f[schema.INSTRUMENT_CLASSES][()])
     cm = derive_class_mapping(instrument_classes)
-    DatasetCatalog.register(name, lambda: _list_hdf5_dicts_filtered(hdf5_dir, cm, keep))
+    DatasetCatalog.register(
+        name, _cached(name, lambda: _list_hdf5_dicts_filtered(hdf5_dir, cm, keep))
+    )
     apply_class_mapping_to_metadata(name, cm)
 
 
 def register_reclass_splits():
-    """Opt-in: only registers if _RECLASS_DIR already holds rendered frames, so a
-    not-yet-rendered set can't break `import maskdino`."""
+    """Registers every _RECLASS_TRAIN_DIRS entry under its dict key, each deriving
+    its own ClassMapping from its own instrument_classes (see register_hdf5_instances) -
+    same shape as the _TRAIN_POOL_DIRS/_VAL_DIRS loops in register_all_hdf5_instances.
+
+    Each reclass train set validates against a plain _VAL_DIRS entry (registered
+    separately by register_all_hdf5_instances) whose own instrument_classes list
+    is already built to match - e.g. reclass_setab_mm validates against
+    "val_setab_mm". No reconciliation needed: train_net.setup() calls
+    assert_train_test_class_mapping_consistent() to fail fast if a config ever
+    pairs a reclass train set with a val set whose mapping doesn't actually
+    match."""
     log = logging.getLogger(__name__)
-    if _first_readable_hdf5(_RECLASS_DIR) is None:
-        log.warning(
-            "[reclass] no readable frames under %s; skipping reclass_* dataset "
-            "registration (set _RECLASS_DIR / render the set first)",
-            _RECLASS_DIR,
-        )
-        return
-    # angle steps are 0,36,72,...,324; %72==0 -> {0,72,144,216,288}, the other
-    # five otherwise. Side (A/B) is independent of angle, so both land in each.
-    even = lambda p: (_deg_of(p) or 0) % 72 == 0
-    odd = lambda p: (_deg_of(p) or 0) % 72 != 0
-    register_hdf5_slice("reclass_train", _RECLASS_DIR, keep=odd)
-    register_hdf5_slice("reclass_val", _RECLASS_DIR, keep=even)
+    for name, hdf5_dir in _RECLASS_TRAIN_DIRS.items():
+        if _first_readable_hdf5(hdf5_dir) is None:
+            log.warning(
+                "[reclass] no readable frames under %s; skipping %s dataset "
+                "registration (render the set first)",
+                hdf5_dir,
+                name,
+            )
+            continue
+        register_hdf5_slice(name, hdf5_dir)
 
 
 def list_hdf5_dicts(hdf5_dir, cm):
@@ -175,7 +209,7 @@ def instrument_classes_from_hdf5(hdf5_dir):
 
 def register_hdf5_instances(name, hdf5_dir):
     cm = derive_class_mapping(instrument_classes_from_hdf5(hdf5_dir))
-    DatasetCatalog.register(name, lambda: list_hdf5_dicts(hdf5_dir, cm))
+    DatasetCatalog.register(name, _cached(name, lambda: list_hdf5_dicts(hdf5_dir, cm)))
     apply_class_mapping_to_metadata(name, cm)
 
 

@@ -329,3 +329,34 @@ def set_num_classes_from_metadata(cfg, dataset_name: str) -> None:
             f"MODEL.SEM_SEG_HEAD.NUM_CLASSES={cur} in config but dataset "
             f"{dataset_name!r} has {n} effective classes: {list(md.thing_classes)}"
         )
+
+
+def assert_train_test_class_mapping_consistent(cfg) -> None:
+    """If both cfg.DATASETS.TRAIN[0] and cfg.DATASETS.TEST[0] are compact-mapped
+    surgical datasets (registered through :func:`apply_class_mapping_to_metadata`),
+    verify they share the exact same contiguous-id <-> canonical-id/name space.
+
+    A model's class_embed head is sized AND ORDERED from the train set alone (see
+    set_num_classes_from_metadata) - if the test set's own class mapping ever
+    drifts from it (wrong source dir, a stale hardcoded assumption, ...),
+    evaluation silently scores every prediction against the wrong class index
+    instead of failing. No-op if either side isn't compact-mapped (stock
+    COCO/ADE/panoptic configs)."""
+    from detectron2.data import MetadataCatalog
+
+    train_md = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
+    test_md = MetadataCatalog.get(cfg.DATASETS.TEST[0])
+    if not train_md.get("class_mapping_entries", None):
+        return
+    if not test_md.get("class_mapping_entries", None):
+        return
+    train_cm = ClassMapping.from_metadata(train_md)
+    test_cm = ClassMapping.from_metadata(test_md)
+    if train_cm != test_cm:
+        raise ValueError(
+            f"DATASETS.TRAIN[0]={cfg.DATASETS.TRAIN[0]!r} and "
+            f"DATASETS.TEST[0]={cfg.DATASETS.TEST[0]!r} carry different class "
+            f"mappings - evaluation would silently score every prediction against "
+            f"the wrong class index. train={train_cm.thing_classes} "
+            f"test={test_cm.thing_classes}"
+        )

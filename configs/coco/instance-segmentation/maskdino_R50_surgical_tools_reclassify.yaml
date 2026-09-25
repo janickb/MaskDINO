@@ -3,7 +3,7 @@ _BASE_: maskdino_R50_bs16_50ep_3s.yaml
 # except sem_seg_head.predictor.class_embed, and retrain the class head on the
 # sparse single-instrument renders (set A + set B together).
 #
-# The head is compact: reclass_train has N=16 effective classes (set A ids 1-6,8,9
+# The head is compact: reclass_setab_mm has N=16 effective classes (set A ids 1-6,8,9
 # + set B ids 11-18), so the class head is wider than phase-1's N=8. WEIGHTS must
 # therefore point at an *adapted* checkpoint from tools/adapt_classifier_checkpoint.py,
 # which copies the 8 set-B rows into their matching slots and fresh-inits the 8
@@ -13,21 +13,23 @@ MODEL:
   # Phase-1 set-B checkpoint re-indexed to the 16-class reclass label space:
   #   ./.venv/bin/python tools/adapt_classifier_checkpoint.py \
   #     --src runs/multi_class_setb_live_pool_real_size_4/model_final.pth --src-legacy-raw
-  WEIGHTS: "runs/20260915_multi_class_seta_frozen_plateauLR/model_final.pth"
+  WEIGHTS: "runs/20260923203934_phase1_training_seta_v1-0/model_final.pth"
   SEM_SEG_HEAD:
     NUM_CLASSES: -1   # derived from reclass_train (-> N=16); see class_mapping.py
   MaskDINO:
     NUM_OBJECT_QUERIES: 100
     DN: "no"                         # disable denoising -> label_enc never used
-    CLASSIFIER_RETRAIN:
+    RECLASSIFY_FINETUNE:
       ENABLED: True                  # freeze all but class_embed; force labels-only loss
     TEST:
       NMS_IOU: 0.5
       HUNGARIAN_EVAL:
         ENABLED: True                # writes inference/instance_matching_confusion*.{csv,png}
+        PERIOD: 1000                  # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
 DATASETS:
-  TRAIN: ("reclass_train",)   # classification set (A+B), rotation angles deg%72 != 0
-  TEST: ("reclass_val",)      # same set, held-out angles deg%72 == 0
+  TRAIN: ("reclass_setab_mm",)
+  TEST: ("val_setab_mm",)
+  TEST_SAMPLE_STRIDE: 4 
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"
   IMAGE_SIZE: 1024
@@ -52,22 +54,20 @@ INPUT:
     ENABLED: True
     MIN_INSTANCES: 0
     MAX_INSTANCES: 10
+    MASK_INTERP: ["linear", "bicubic","lanczos"]  # any of "nearest" | "linear" | "bicubic" | "lanczos"
+    BLEND_MODES: ["none", "gaussian_blur_edge", "box_blur"] # "alpha_feather"
 SOLVER:
   IMS_PER_BATCH: 6
-  BASE_LR: 0.0005        # a single linear head tolerates a higher LR than the full model
-  LR_SCHEDULER_NAME: "WarmupCosineRestartsLR"   # SGDR: one warm restart, not a single decay
-  BASE_LR_END: 0.000005                 # cosine floor of every cycle = 1% of BASE_LR
-  MAX_ITER: 1000         # ~150 train imgs -> ~40 epochs; retune from the eval curve
-  WARMUP_ITERS: 50
-  WARMUP_FACTOR: 0.001                  # real linear ramp; Base-COCO inherits 1.0 (= no ramp)
+  BASE_LR: 0.00001        # a single linear head tolerates a higher LR than the full model
+  LR_SCHEDULER_NAME: "WarmupCosineLR"   # SGDR: one warm restart, not a single decay
+  BASE_LR_END: 0.00000005                 # cosine floor of every cycle = 1% of BASE_LR
+  MAX_ITER: 6000
+  WARMUP_ITERS: 1000
+  WARMUP_FACTOR: 0.0001                  # real linear ramp; Base-COCO inherits 1.0 (= no ramp)
   CHECKPOINT_PERIOD: 1000   # /home quota is tight - keep few ~500MB checkpoints
-  COSINE_RESTARTS:
-    T_0: 400        # cycle 0 = [0,400) full decay to the floor; cycle 1 = [400,1200) cut off
-    T_MULT: 2.0     # at MAX_ITER=1000 (75% through) - one restart, not the ~5-cycle pattern
-    RESTART_WARMUP_FACTOR: 0.3      # restart ramps from 30% of BASE_LR instead of snapping to it
-    RESTART_WARMUP_FRACTION: 0.05   # over the first 5% of the restart cycle (400*0.05=20 iters)
+
 TEST:
-  EVAL_PERIOD: 200
+  EVAL_PERIOD: 250
 OUTPUT_DIR: "runs/reclassify_4-1"
 DATALOADER:
   NUM_WORKERS: 4

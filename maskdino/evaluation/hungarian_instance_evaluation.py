@@ -50,6 +50,7 @@ from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.evaluation import DatasetEvaluator
 from detectron2.structures import BitMasks, pairwise_iou
 from detectron2.utils import comm
+from detectron2.utils.events import get_event_storage
 from scipy.optimize import linear_sum_assignment
 
 __all__ = ["HungarianInstanceEvaluator", "hungarian_match", "mask_iou_matrix"]
@@ -468,8 +469,29 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
 
     # ------------------------------------------------------------------ artifacts
 
+    def _iter_label(self):
+        """Current training iteration as a fixed-width label, or "final" outside a
+        training loop (--eval-only, offline re-run) where no EventStorage exists."""
+        try:
+            return f"iter_{get_event_storage().iter:07d}"
+        except AssertionError:
+            return "final"
+
     def _write_artifacts(self, records, confusion, false_neg_pc, false_pos_pc):
-        os.makedirs(self._output_dir, exist_ok=True)
+        # Every periodic eval during training reused these same filenames, so each
+        # HUNGARIAN_EVAL.PERIOD run silently clobbered the previous one's confusion
+        # matrix. Archive a copy per iteration under hungarian_confusion/ alongside the
+        # canonical latest-snapshot files (still written directly in self._output_dir,
+        # which tools/summarize_reclass.py and existing callers key off of).
+        archive_dir = os.path.join(
+            self._output_dir, "hungarian_confusion", self._iter_label()
+        )
+        for out_dir in (self._output_dir, archive_dir):
+            os.makedirs(out_dir, exist_ok=True)
+        self._write_artifacts_to(self._output_dir, records, confusion, false_neg_pc, false_pos_pc)
+        self._write_artifacts_to(archive_dir, records, confusion, false_neg_pc, false_pos_pc)
+
+    def _write_artifacts_to(self, out_dir, records, confusion, false_neg_pc, false_pos_pc):
         max_id = 0
         for g, p in confusion:
             max_id = max(max_id, g, p)
@@ -503,7 +525,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         row_denom = np.maximum(mat.sum(axis=1), 1).astype(np.float64)
         norm = mat / row_denom[:, None]
 
-        conf_csv = os.path.join(self._output_dir, "instance_matching_confusion.csv")
+        conf_csv = os.path.join(out_dir, "instance_matching_confusion.csv")
         with open(conf_csv, "w", newline="") as fh:
             w = csv.writer(fh)
             w.writerow(["gt\\pred"] + col_names)
@@ -512,7 +534,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         self._logger.info("[HungarianInstanceEvaluator] wrote %s", conf_csv)
 
         rownorm_csv = os.path.join(
-            self._output_dir, "instance_matching_confusion_rownorm.csv"
+            out_dir, "instance_matching_confusion_rownorm.csv"
         )
         with open(rownorm_csv, "w", newline="") as fh:
             w = csv.writer(fh)
@@ -521,7 +543,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                 w.writerow([row_names[i]] + [f"{v:.4f}" for v in norm[i].tolist()])
         self._logger.info("[HungarianInstanceEvaluator] wrote %s", rownorm_csv)
 
-        per_img_csv = os.path.join(self._output_dir, "instance_matching_per_image.csv")
+        per_img_csv = os.path.join(out_dir, "instance_matching_per_image.csv")
         fields = [
             "image_id",
             "file_name",
@@ -574,7 +596,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                         )
             fig.colorbar(im, ax=ax, label="row-normalized fraction")
             fig.tight_layout()
-            png = os.path.join(self._output_dir, "instance_matching_confusion.png")
+            png = os.path.join(out_dir, "instance_matching_confusion.png")
             fig.savefig(png, dpi=150)
             plt.close(fig)
             self._logger.info("[HungarianInstanceEvaluator] wrote %s", png)

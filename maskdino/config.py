@@ -97,10 +97,10 @@ def add_maskdino_config(cfg):
 
     cfg.MODEL.MaskDINO.EVAL_FLAG = 1
 
-    # Classifier-only few-shot retraining
-    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN = CN()
-    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED = False
-    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.TRAINABLE_PARAM_PREFIXES = [
+    # Reclassification-phase fine-tuning (few-shot retrain on a frozen backbone)
+    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE = CN()
+    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENABLED = False
+    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.TRAINABLE_PARAM_PREFIXES = [
         "sem_seg_head.predictor.class_embed"
     ]
     # Also unfreeze the transformer decoder (DINO decoder layers + the mask/box
@@ -109,10 +109,11 @@ def add_maskdino_config(cfg):
     # only the linear class head. When True, the loss set is NOT forced to
     # labels-only - mask/box losses + deep supervision come back so the decoder
     # is anchored on segmentation quality.
-    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.UNFREEZE_DECODER = False
-    # Decoder params train at BASE_LR * this factor (the linear class head keeps
-    # the full BASE_LR); only applied when UNFREEZE_DECODER is True.
-    cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.DECODER_LR_MULTIPLIER = 0.1
+    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_DECODER = False
+    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER = False
+    # Encoder params train at BASE_LR * this factor; only applied when
+    # UNFREEZE_ENCODER is True.
+    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENCODER_LR_MULTIPLIER = 0.1
 
     # -1 = "derive from the dataset": for datasets registered with a compact class
     # mapping (the surgical HDF5 loaders), train_net.setup() fills this in from the
@@ -159,8 +160,13 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SCORE_THRESH = 0.5     # drop preds below this confidence
     cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.IOU_THRESH = 0.5       # min mask IoU for a match to be accepted
     cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.BOX_PREFILTER = True   # box-IoU prune before exact mask IoU
+
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.PERIOD = 0
     # GT visibility filtering is NOT a separate knob: the evaluator always reuses
     # INPUT.MIN_VISIBILITY so "recall" is measured against the same GT the model trained on.
+
+    # 1 = no subsampling (default; every existing config is unaffected). N>1 keeps
+    cfg.DATASETS.TEST_SAMPLE_STRIDE = 1
 
     # Sometimes `backbone.size_divisibility` is set to 0 for some backbone (e.g. ResNet)
     # you can use this config to override
