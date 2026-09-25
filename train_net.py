@@ -43,6 +43,7 @@ from detectron2.engine import (
     create_ddp_model,
     default_argument_parser,
     default_setup,
+    hooks,
     launch,
 )
 from detectron2.evaluation import (
@@ -73,6 +74,8 @@ from maskdino import (
     PlateauLRScheduler,
     SemanticSegmentorWithTTA,
     add_maskdino_config,
+    apply_test_sample_stride,
+    assert_train_test_class_mapping_consistent,
     build_warmup_cosine_restarts_lr_scheduler,
     set_num_classes_from_metadata,
     write_class_mapping_sidecar,
@@ -135,13 +138,22 @@ class Trainer(DefaultTrainer):
         self.register_hooks(self.build_hooks())
 
     @classmethod
-    def build_evaluator(cls, cfg, dataset_name, output_folder=None):
+    def build_evaluator(
+        cls, cfg, dataset_name, output_folder=None, include_coco=True, include_hungarian=True
+    ):
         """
         Create evaluator(s) for a given dataset.
         This uses the special metadata "evaluator_type" associated with each
         builtin dataset. For your own dataset, you can simply create an
         evaluator manually in your script and do not have to worry about the
         hacky if-else logic here.
+
+        `include_coco`/`include_hungarian` let build_hooks() split the "coco" evaluator
+        type's two evaluators (COCOEvaluator + the optional HungarianInstanceEvaluator)
+        across two separately-scheduled EvalHooks when MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
+        .PERIOD decouples the confusion-matrix cadence from TEST.EVAL_PERIOD - see
+        build_hooks(). Both default True so every other call site (--eval-only,
+        test_with_TTA) is unaffected.
         """
         if output_folder is None:
             if len(cfg.DATASETS.TEST) > 1:
@@ -161,12 +173,13 @@ class Trainer(DefaultTrainer):
             )
         # instance segmentation
         if evaluator_type == "coco":
-            evaluator_list.append(
-                COCOEvaluator(
-                    dataset_name, output_dir=output_folder, allow_cached_coco=False
+            if include_coco:
+                evaluator_list.append(
+                    COCOEvaluator(
+                        dataset_name, output_dir=output_folder, allow_cached_coco=False
+                    )
                 )
-            )
-            if cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED:
+            if include_hungarian and cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED:
                 from maskdino.evaluation.hungarian_instance_evaluation import (
                     HungarianInstanceEvaluator,
                 )
@@ -355,6 +368,15 @@ class Trainer(DefaultTrainer):
         actually drives self.scheduler (a PlateauLRScheduler)'s LR changes, since
         that scheduler's own per-iteration step() (called by detectron2's stock
         hooks.LRScheduler, already in the list from super()) is a no-op by design.
+
+        Also splits the single stock EvalHook in two when
+        MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.PERIOD requests a cadence different from
+        TEST.EVAL_PERIOD: HungarianInstanceEvaluator roughly doubles per-image eval cost
+        (GT mask decode + mask-IoU matrix + Hungarian match, all serial CPU) on top of
+        COCOEvaluator's own RLE encoding, but only feeds a diagnostic confusion matrix -
+        not the bbox/segm AP that SOLVER.PLATEAU/TensorBoard actually track - so it
+        doesn't need to run as often. See build_evaluator()'s include_coco/
+        include_hungarian params.
         """
         ret = super().build_hooks()
         if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
@@ -365,6 +387,36 @@ class Trainer(DefaultTrainer):
                     self.cfg.SOLVER.PLATEAU.CHECK_PERIOD,
                 )
             )
+
+        he = self.cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
+        if he.ENABLED and he.PERIOD > 0 and he.PERIOD != self.cfg.TEST.EVAL_PERIOD:
+
+            def cheap_test_and_save_results():
+                evaluators = [
+                    self.build_evaluator(self.cfg, name, include_hungarian=False)
+                    for name in self.cfg.DATASETS.TEST
+                ]
+                self._last_eval_results = self.test(
+                    self.cfg, self.model, evaluators=evaluators
+                )
+                return self._last_eval_results
+
+            def hungarian_test_and_save_results():
+                evaluators = [
+                    self.build_evaluator(self.cfg, name, include_coco=False)
+                    for name in self.cfg.DATASETS.TEST
+                ]
+                return self.test(self.cfg, self.model, evaluators=evaluators)
+
+            # Stock DefaultTrainer.build_hooks() always installs exactly one
+            # hooks.EvalHook (running both evaluators together at TEST.EVAL_PERIOD) -
+            # replace it in place with two separately-scheduled ones.
+            idx = next(i for i, h in enumerate(ret) if isinstance(h, hooks.EvalHook))
+            ret[idx : idx + 1] = [
+                hooks.EvalHook(self.cfg.TEST.EVAL_PERIOD, cheap_test_and_save_results),
+                hooks.EvalHook(he.PERIOD, hungarian_test_and_save_results),
+            ]
+
         return ret
 
     @classmethod
@@ -376,12 +428,12 @@ class Trainer(DefaultTrainer):
         defaults["lr"] = cfg.SOLVER.BASE_LR
         defaults["weight_decay"] = cfg.SOLVER.WEIGHT_DECAY
 
-        # classifier-retrain with the decoder unfrozen: the linear class head keeps
-        # BASE_LR, the (pretrained) decoder + its prediction heads train gentler.
-        cr = cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN
+        # reclassify-finetune with the decoder/encoder unfrozen: the linear class
+        # head keeps BASE_LR, the (pretrained) decoder/encoder train gentler.
+        rf = cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE
         decoder_lr_mult = (
-            cr.DECODER_LR_MULTIPLIER
-            if cr.ENABLED and cr.UNFREEZE_DECODER
+            rf.DECODER_LR_MULTIPLIER
+            if rf.ENABLED and rf.UNFREEZE_DECODER
             else 1.0
         )
         decoder_lr_prefixes = (
@@ -390,6 +442,12 @@ class Trainer(DefaultTrainer):
             "sem_seg_head.predictor.bbox_embed",
             "sem_seg_head.predictor._bbox_embed",
         )
+        encoder_lr_mult = (
+            rf.ENCODER_LR_MULTIPLIER
+            if rf.ENABLED and rf.UNFREEZE_ENCODER
+            else 1.0
+        )
+        encoder_lr_prefixes = ("sem_seg_head.pixel_decoder",)
 
         norm_module_types = (
             torch.nn.BatchNorm1d,
@@ -423,6 +481,8 @@ class Trainer(DefaultTrainer):
                     )
                 if decoder_lr_mult != 1.0 and module_name.startswith(decoder_lr_prefixes):
                     hyperparams["lr"] = hyperparams["lr"] * decoder_lr_mult
+                if encoder_lr_mult != 1.0 and module_name.startswith(encoder_lr_prefixes):
+                    hyperparams["lr"] = hyperparams["lr"] * encoder_lr_mult
                 if (
                     "relative_position_bias_table" in module_param_name
                     or "absolute_pos_embed" in module_param_name
@@ -496,12 +556,17 @@ def setup(args):
     add_maskdino_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    # Fail fast if train/test still disagree on the class id space (wrong dataset
+    # pairing, a future reclass variant this doesn't know about, ...) instead of
+    # silently scoring every prediction against the wrong class index.
+    assert_train_test_class_mapping_consistent(cfg)
     # NUM_CLASSES == -1 means "size the class head to the dataset": fill it in from
     # the registered dataset's effective class count. No-op for stock datasets.
     _ds_for_classes = (
         cfg.DATASETS.TEST[0] if args.eval_only else cfg.DATASETS.TRAIN[0]
     )
     set_num_classes_from_metadata(cfg, _ds_for_classes)
+    apply_test_sample_stride(cfg)
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(
@@ -543,6 +608,27 @@ if __name__ == "__main__":
     # random port
     port = random.randint(1000, 20000)
     args.dist_url = "tcp://127.0.0.1:" + str(port)
+
+    if not args.eval_only and not args.resume:
+        # Fresh training run: stamp a yyyymmddhhmmss_ prefix onto the run folder's own
+        # name so starting the same config twice doesn't overwrite the previous run's
+        # checkpoints/logs. Computed once here (before launch() forks one process per
+        # GPU) and passed down via args.opts so every rank resolves the identical
+        # OUTPUT_DIR - computing it independently per-rank inside setup() could let two
+        # ranks land on different seconds and disagree. --resume/--eval-only skip this:
+        # they target an existing run's folder as configured, not a new one.
+        _cfg = get_cfg()
+        add_deeplab_config(_cfg)
+        add_maskdino_config(_cfg)
+        _cfg.merge_from_file(args.config_file)
+        _cfg.merge_from_list(args.opts)
+        _run_dir = _cfg.OUTPUT_DIR.rstrip("/")
+        _stamped = os.path.join(
+            os.path.dirname(_run_dir),
+            f"{time.strftime('%Y%m%d%H%M%S')}_{os.path.basename(_run_dir)}",
+        )
+        args.opts += ["OUTPUT_DIR", _stamped]
+
     print("Command Line Args:", args)
     print("pwd:", os.getcwd())
     launch(

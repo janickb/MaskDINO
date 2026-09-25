@@ -29,6 +29,7 @@ MODEL:
 DATASETS:
   TRAIN: ("reclass_setab_mm",)
   TEST: ("val_setab_mm",)
+  TEST_SAMPLE_STRIDE: 4 
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"
   IMAGE_SIZE: 1024
@@ -57,11 +58,11 @@ INPUT:
     BLEND_MODES: ["none", "gaussian_blur_edge", "box_blur"] # "alpha_feather"
 SOLVER:
   IMS_PER_BATCH: 6
-  BASE_LR: 0.0002        # a single linear head tolerates a higher LR than the full model
+  BASE_LR: 0.00005        # a single linear head tolerates a higher LR than the full model
   LR_SCHEDULER_NAME: "WarmupCosineLR"   # SGDR: one warm restart, not a single decay
-  BASE_LR_END: 0.000005                 # cosine floor of every cycle = 1% of BASE_LR
-  MAX_ITER: 10000
-  WARMUP_ITERS: 250
+  BASE_LR_END: 0.0000005                 # cosine floor of every cycle = 1% of BASE_LR
+  MAX_ITER: 6000
+  WARMUP_ITERS: 1000
   WARMUP_FACTOR: 0.0001                  # real linear ramp; Base-COCO inherits 1.0 (= no ramp)
   CHECKPOINT_PERIOD: 1000   # /home quota is tight - keep few ~500MB checkpoints
 

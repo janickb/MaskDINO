@@ -92,9 +92,10 @@ class MaskDINO(nn.Module):
         focus_on_box: bool = False,
         transform_eval: bool = False,
         semantic_ce_loss: bool = False,
-        classifier_retrain: bool = False,
-        classifier_retrain_prefixes: Tuple[str] = ("sem_seg_head.predictor.class_embed",),
-        classifier_retrain_unfreeze_decoder: bool = False,
+        reclassify_finetune: bool = False,
+        reclassify_finetune_prefixes: Tuple[str] = ("sem_seg_head.predictor.class_embed",),
+        reclassify_finetune_unfreeze_decoder: bool = False,
+        reclassify_finetune_unfreeze_encoder: bool = False,
     ):
         """
         Args:
@@ -154,28 +155,34 @@ class MaskDINO(nn.Module):
         if not self.semantic_on:
             assert self.sem_seg_postprocess_before_inference
 
-        self.classifier_retrain = classifier_retrain
-        self.classifier_retrain_prefixes = tuple(classifier_retrain_prefixes)
-        if classifier_retrain_unfreeze_decoder:
+        self.reclassify_finetune = reclassify_finetune
+        self.reclassify_finetune_prefixes = tuple(reclassify_finetune_prefixes)
+        if reclassify_finetune_unfreeze_decoder:
             # DINO decoder stack + the heads it drives. The backbone and the
             # MSDeformAttn pixel encoder (sem_seg_head.pixel_decoder) stay frozen;
             # so do label_enc (DN off), query_feat/query_embed (fixed query init)
             # and enc_output (two-stage query selection).
-            self.classifier_retrain_prefixes = self.classifier_retrain_prefixes + (
+            self.reclassify_finetune_prefixes = self.reclassify_finetune_prefixes + (
                 "sem_seg_head.predictor.decoder",
                 "sem_seg_head.predictor.mask_embed",
                 "sem_seg_head.predictor._bbox_embed",
                 "sem_seg_head.predictor.bbox_embed",
             )
-        if self.classifier_retrain:
+
+        if reclassify_finetune_unfreeze_encoder:
+            self.reclassify_finetune_prefixes = self.reclassify_finetune_prefixes + (
+                "sem_seg_head.pixel_decoder",
+            )
+
+        if self.reclassify_finetune:
             trainable = 0
             for name, p in self.named_parameters():
-                keep = name.startswith(self.classifier_retrain_prefixes)
+                keep = name.startswith(self.reclassify_finetune_prefixes)
                 p.requires_grad_(keep)
                 trainable += keep
             print(
-                f'[classifier-retrain] {trainable} trainable parameter tensor(s), '
-                f'prefixes={self.classifier_retrain_prefixes}'
+                f'[reclassify-finetune] {trainable} trainable parameter tensor(s), '
+                f'prefixes={self.reclassify_finetune_prefixes}'
             )
 
         print('criterion.weight_dict ', self.criterion.weight_dict)
@@ -239,8 +246,9 @@ class MaskDINO(nn.Module):
         else:
             losses = ["labels", "masks"]
         if (
-            cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED
-            and not cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.UNFREEZE_DECODER
+            cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENABLED
+            and not cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_DECODER
+            and not cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER
         ):
             # Only class_embed trains; mask/box losses have no path to it.
             losses = ["labels"]
@@ -287,9 +295,10 @@ class MaskDINO(nn.Module):
             "transform_eval": cfg.MODEL.MaskDINO.TEST.PANO_TRANSFORM_EVAL,
             "pano_temp": cfg.MODEL.MaskDINO.TEST.PANO_TEMPERATURE,
             "semantic_ce_loss": cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and not cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
-            "classifier_retrain": cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.ENABLED,
-            "classifier_retrain_prefixes": tuple(cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.TRAINABLE_PARAM_PREFIXES),
-            "classifier_retrain_unfreeze_decoder": cfg.MODEL.MaskDINO.CLASSIFIER_RETRAIN.UNFREEZE_DECODER,
+            "reclassify_finetune": cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENABLED,
+            "reclassify_finetune_prefixes": tuple(cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.TRAINABLE_PARAM_PREFIXES),
+            "reclassify_finetune_unfreeze_decoder": cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_DECODER,
+            "reclassify_finetune_unfreeze_encoder": cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER,
         }
 
     @property

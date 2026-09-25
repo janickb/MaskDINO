@@ -13,11 +13,15 @@ from .config import add_maskdino_config
 # compact ("effective") class label space + embedded checkpoint mapping
 from .data.class_mapping import (
     ClassMapping,
+    assert_train_test_class_mapping_consistent,
     derive_class_mapping,
     load_class_mapping,
     set_num_classes_from_metadata,
     write_class_mapping_sidecar,
 )
+
+# periodic-eval speed: subsample DATASETS.TEST via cfg.DATASETS.TEST_SAMPLE_STRIDE
+from .data.datasets.register_hdf5_instance import apply_test_sample_stride
 
 # dataset loading
 from .data.dataset_mappers.coco_instance_new_baseline_dataset_mapper import COCOInstanceNewBaselineDatasetMapper
