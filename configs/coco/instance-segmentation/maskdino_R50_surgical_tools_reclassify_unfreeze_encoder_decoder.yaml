@@ -15,6 +15,7 @@ _BASE_: maskdino_R50_surgical_tools_reclassify.yaml
 # answers "are the frozen query embeddings linearly separable"; keep v2 as that
 # baseline.
 MODEL:
+  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
   MaskDINO:
     DROPOUT: 0.0                      # keep the train/eval-equivalence assumption
                                      # (maskdino.py NOTE ~L283); revisit if the
@@ -35,4 +36,4 @@ TEST:
   # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
   # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
   EVAL_PERIOD: 1000                   # watch for decoder drift / overfit early
-OUTPUT_DIR: "runs/reclassify_unfreeze_encoder_decoder_v3"
+OUTPUT_DIR: "runs/reclassify_unfreeze_encoder_decoder_fullValSet_v2_pile_augmentation_no_finetune"

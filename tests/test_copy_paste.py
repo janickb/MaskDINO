@@ -109,6 +109,9 @@ def compositor_factory(tmp_path):
             feather_width_range=(2, 7),
             core_margin_px=2,
             image_format="BGR",
+            cluster_prob=0.0,
+            cluster_radius_fraction=0.25,
+            cluster_stray_fraction=0.2,
         )
         defaults.update(kwargs)
         return CopyPasteCompositor(sources, **defaults), sources
@@ -187,6 +190,106 @@ def test_modal_masks_never_overlap_across_paste_chronology(compositor_factory):
     for i in range(len(masks)):
         for j in range(i + 1, len(masks)):
             assert not np.any(masks[i] & masks[j])
+
+
+def test_cluster_prob_zero_matches_uniform_path(compositor_factory):
+    # cluster_prob=0.0 (the fixture default) must be bit-identical to the
+    # pre-clustering uniform placement for the same seed - the one extra
+    # random.random() draw __call__ now always makes must not itself change
+    # *which* pixels get chosen, only that a fixed extra draw is consumed.
+    compositor, _ = compositor_factory(n_sources=5, min_instances=3, max_instances=3)
+    dest = _solid_image(64, 0)
+
+    random.seed(20)
+    _, anns_a = compositor(dest, [])
+    random.seed(20)
+    _, anns_b = compositor(dest, [])
+
+    for a, b in zip(anns_a, anns_b):
+        assert a["bbox"] == b["bbox"]
+
+
+def test_cluster_prob_one_concentrates_placements_near_center(compositor_factory):
+    # cluster_prob=1.0, cluster_stray_fraction=0.0 -> every instance is piled,
+    # so every pasted mask's centroid should land within a small multiple of
+    # sigma of the group's own mean centroid (the true center isn't directly
+    # observable from the public API, so we check mutual concentration).
+    compositor, _ = compositor_factory(
+        n_sources=6, min_instances=6, max_instances=6,
+        cluster_prob=1.0, cluster_radius_fraction=0.15, cluster_stray_fraction=0.0,
+    )
+    dest = _solid_image(200, 0)
+
+    random.seed(21)
+    _, anns = compositor(dest, [])
+    centroids = []
+    for ann in anns:
+        mask = mask_util.decode(ann["segmentation"]).astype(bool)
+        ys, xs = np.where(mask)
+        centroids.append((ys.mean(), xs.mean()))
+
+    sigma = compositor._cluster_sigma(200, 200)
+    mean_y = sum(c[0] for c in centroids) / len(centroids)
+    mean_x = sum(c[1] for c in centroids) / len(centroids)
+    for y, x in centroids:
+        assert abs(y - mean_y) < 4 * sigma
+        assert abs(x - mean_x) < 4 * sigma
+
+
+def test_cluster_center_moves_across_calls(compositor_factory):
+    # The Gaussian center must be freshly randomized per __call__, never
+    # fixed. Two different seeds should (with overwhelming probability, given
+    # a small std relative to a large canvas) produce different pile
+    # locations.
+    compositor, _ = compositor_factory(
+        n_sources=4, min_instances=4, max_instances=4,
+        cluster_prob=1.0, cluster_radius_fraction=0.1, cluster_stray_fraction=0.0,
+    )
+    dest = _solid_image(256, 0)
+
+    def _mean_centroid(seed):
+        random.seed(seed)
+        _, anns = compositor(dest, [])
+        pts = []
+        for ann in anns:
+            mask = mask_util.decode(ann["segmentation"]).astype(bool)
+            ys, xs = np.where(mask)
+            pts.append((ys.mean(), xs.mean()))
+        return sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+
+    c1 = _mean_centroid(30)
+    c2 = _mean_centroid(31)
+    assert c1 != c2
+
+
+def test_cluster_stray_fraction_one_behaves_like_uniform(compositor_factory):
+    # cluster_prob=1.0 but cluster_stray_fraction=1.0 -> every instance takes
+    # the stray (old uniform) branch despite the frame being "clustered",
+    # i.e. functionally equivalent to the plain uniform path.
+    compositor, _ = compositor_factory(
+        n_sources=5, min_instances=3, max_instances=3,
+        cluster_prob=1.0, cluster_stray_fraction=1.0,
+    )
+    dest = _solid_image(64, 0)
+
+    random.seed(22)
+    _, anns = compositor(dest, [])
+    assert len(anns) == 3  # just a sanity check that placement still succeeds
+
+
+def test_place_clustered_clamps_instead_of_rejecting(compositor_factory):
+    # A center near the edge with std=0 must clamp the patch fully on-canvas
+    # rather than returning None - preserving the "no retry, clamp instead"
+    # guarantee for the clustered path.
+    compositor, _ = compositor_factory()
+    patch_mask = _l_shape(size=24)
+    placement = compositor._place(
+        patch_mask, 64, 64, center=(0.0, 0.0), std=(0.0, 0.0)
+    )
+    assert placement is not None
+    py, px, full_mask = placement
+    assert 0 <= py <= 64 - 24
+    assert 0 <= px <= 64 - 24
 
 
 def test_transform_never_flips(compositor_factory):

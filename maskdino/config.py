@@ -237,6 +237,14 @@ def add_maskdino_config(cfg):
     # background) side is unaffected.
     cfg.INPUT.COPY_PASTE.CORE_MARGIN_PX = 2
 
+    # "Clustered pile" placement (opt-in, ADDITIONAL to the uniform placement
+    # above, never replacing it): per __call__ (one composited frame), with
+    # probability CLUSTER_PROB the k sampled instances are placed as a pile
+    # concentrated around a single, freshly-randomized 2D Gaussian center
+    cfg.INPUT.COPY_PASTE.CLUSTER_PROB = 0.0
+    cfg.INPUT.COPY_PASTE.CLUSTER_RADIUS_FRACTION = 0.25
+    cfg.INPUT.COPY_PASTE.CLUSTER_STRAY_FRACTION = 0.2
+
     # point loss configs
     # Number of points sampled during training for a mask point head.
     cfg.MODEL.MaskDINO.TRAIN_NUM_POINTS = 112 * 112

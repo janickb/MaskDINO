@@ -56,6 +56,12 @@ INPUT:
     MAX_INSTANCES: 10
     MASK_INTERP: ["linear", "bicubic","lanczos"]  # any of "nearest" | "linear" | "bicubic" | "lanczos"
     BLEND_MODES: ["none", "gaussian_blur_edge", "box_blur"] # "alpha_feather"
+    # Validation frames show instrument piles concentrated in a small region,
+    # not scattered uniformly - "clustered pile" placement mimics this on a
+    # fraction of training frames, additively to the uniform placement above.
+    CLUSTER_PROB: 0.5             # half of composited frames use a pile instead of uniform scatter
+    CLUSTER_RADIUS_FRACTION: 0.25 # pile's 2-sigma radius ~= 1/4 of the shorter side (~1/5 of the area)
+    CLUSTER_STRAY_FRACTION: 0.2   # on a piled frame, ~20% of instances are placed as strays away from it
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.00001        # a single linear head tolerates a higher LR than the full model

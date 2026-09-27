@@ -94,6 +94,9 @@ class Hdf5CocoInstanceDatasetMapper:
                 "feather_width_range": tuple(cfg.INPUT.COPY_PASTE.FEATHER_WIDTH_RANGE),
                 "core_margin_px": cfg.INPUT.COPY_PASTE.CORE_MARGIN_PX,
                 "image_format": cfg.INPUT.FORMAT,
+                "cluster_prob": cfg.INPUT.COPY_PASTE.CLUSTER_PROB,
+                "cluster_radius_fraction": cfg.INPUT.COPY_PASTE.CLUSTER_RADIUS_FRACTION,
+                "cluster_stray_fraction": cfg.INPUT.COPY_PASTE.CLUSTER_STRAY_FRACTION,
             },
         }
         return ret

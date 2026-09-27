@@ -87,6 +87,9 @@ def main():
     cfg.INPUT.COPY_PASTE.ENABLED = True
     cfg.INPUT.COPY_PASTE.BLEND_MODES = ["gaussian_blur_edge"] #["none", "gaussian_blur_edge", "box_blur", "alpha_feather"]
     cfg.INPUT.COPY_PASTE.MASK_INTERP = ["bicubic"]  # randomized per instance
+    cfg.INPUT.COPY_PASTE.CLUSTER_PROB = 1.0          # force every preview sample to use clustered pile placement
+    cfg.INPUT.COPY_PASTE.CLUSTER_RADIUS_FRACTION = 0.25
+    cfg.INPUT.COPY_PASTE.CLUSTER_STRAY_FRACTION = 0.2
     cfg.freeze()
 
     train_dataset_name = cfg.DATASETS.TRAIN[0]

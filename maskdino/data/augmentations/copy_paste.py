@@ -107,6 +107,9 @@ class CopyPasteCompositor:
         feather_width_range,
         core_margin_px,
         image_format,
+        cluster_prob,
+        cluster_radius_fraction,
+        cluster_stray_fraction,
     ):
         self.min_instances = min_instances
         self.max_instances = max_instances
@@ -117,6 +120,9 @@ class CopyPasteCompositor:
         self.feather_width_range = tuple(feather_width_range)
         self.core_margin_px = core_margin_px
         self.image_format = image_format
+        self.cluster_prob = cluster_prob
+        self.cluster_radius_fraction = cluster_radius_fraction
+        self.cluster_stray_fraction = cluster_stray_fraction
         self._crop_margin_px = max(self.blur_kernel_range[1] // 2 + 1, 0)
         self._instance_cache = self._build_instance_cache(source_dicts)
 
@@ -184,16 +190,31 @@ class CopyPasteCompositor:
 
         n = len(self._instance_cache)
         k = random.randint(self.min_instances, self.max_instances)
-        # Sampling indices (rather than list(cache) + shuffle) keeps this O(k)
-        # instead of O(n) - the instance cache can be large, but only up to
-        # max_instances of it is ever used per call.
+
+        # Per-frame mode pick: with probability cluster_prob this whole call
+        # uses clustered "pile" placement (a fresh center + sigma, computed
+        # once here)
+        use_cluster = random.random() < self.cluster_prob
+        cluster_center = None
+        cluster_std = None
+        if use_cluster:
+            sigma = self._cluster_sigma(h, w)
+            cluster_center = self._sample_cluster_center(h, w, sigma)
+            cluster_std = (sigma, sigma)
+
         pasted = 0
         for idx in random.sample(range(n), min(k, n)):
             crop, crop_mask, category_id = self._instance_cache[idx]
 
             patch, patch_mask, valid_footprint = self._transform_instance(crop, crop_mask)
 
-            placement = self._place(patch_mask, h, w)
+            if use_cluster and random.random() >= self.cluster_stray_fraction:
+                # Piled: Gaussian-around-center draw.
+                placement = self._place(
+                    patch_mask, h, w, center=cluster_center, std=cluster_std
+                )
+            else:
+                placement = self._place(patch_mask, h, w)
             if placement is None:
                 continue
             py, px, full_mask = placement
@@ -317,18 +338,56 @@ class CopyPasteCompositor:
         ).astype(bool)
         return patch, patch_mask, valid_footprint
 
-    def _place(self, patch_mask, h, w):
-        """Single uniform-random placement - no retry to reduce overlap with
+    def _cluster_sigma(self, h, w):
+        """2D Gaussian std for clustered placement, derived from
+        cluster_radius_fraction: the pile's ~2-sigma (95%) footprint radius is
+        that fraction of the image's shorter side. E.g. 0.25 -> a circular
+        2-sigma footprint covering ~1/5 of the image area."""
+        return self.cluster_radius_fraction * min(h, w) / 2.0
+
+    def _sample_cluster_center(self, h, w, sigma):
+        """Fresh, uniformly-random cluster center for ONE clustered __call__ -
+        never a fixed location. Biased inward by `sigma` so the pile's mass
+        mostly lands on canvas even when the center draw is near an edge;
+        collapses toward the canvas midpoint on any axis where sigma already
+        covers half the canvas."""
+        margin_y = min(sigma, h / 2.0)
+        margin_x = min(sigma, w / 2.0)
+        cy = random.uniform(margin_y, h - margin_y)
+        cx = random.uniform(margin_x, w - margin_x)
+        return cy, cx
+
+    def _place(self, patch_mask, h, w, center=None, std=None):
+        """Single random placement - no retry to reduce overlap with
         already-occupied pixels. Occlusion between instruments is a real
         scenario the network needs to learn, not an artifact to suppress, so
         whatever the one random draw lands on (however much it overlaps
-        existing content) is used as-is."""
+        existing content, or spills toward a canvas edge) is used as-is -
+        clamped into the valid placement range, never re-drawn/rejected.
+
+        center=None (default): uniform placement, exactly the original
+        behavior - py, px ~ U(0, h-ph) x U(0, w-pw).
+
+        center=(cy, cx), std=(sigma_y, sigma_x): clustered "pile" placement -
+        the patch's CENTER (not its top-left corner) is drawn from a 2D
+        Gaussian around (cy, cx), converted to a top-left corner, and clamped
+        into [0, h-ph] x [0, w-pw] rather than discarded.
+        """
         ph, pw = patch_mask.shape[:2]
         if ph > h or pw > w:
             return None
 
-        py = random.randint(0, h - ph)
-        px = random.randint(0, w - pw)
+        if center is None:
+            py = random.randint(0, h - ph)
+            px = random.randint(0, w - pw)
+        else:
+            cy, cx = center
+            sigma_y, sigma_x = std
+            y = random.gauss(cy, sigma_y) - ph / 2.0
+            x = random.gauss(cx, sigma_x) - pw / 2.0
+            py = int(round(min(max(y, 0.0), h - ph)))
+            px = int(round(min(max(x, 0.0), w - pw)))
+
         full_mask = np.zeros((h, w), dtype=bool)
         full_mask[py : py + ph, px : px + pw] = patch_mask
         return py, px, full_mask
