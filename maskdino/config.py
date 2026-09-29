@@ -197,6 +197,11 @@ def add_maskdino_config(cfg):
 
     cfg.INPUT.MIN_VISIBILITY = 0.0
 
+    # Drop GT + predicted instances cut off by the frame edge from evaluation
+    # (DATASETS.TEST only) - unlike MIN_VISIBILITY, which is occlusion, not
+    # truncation. See apply_truncated_instance_filter / DropTruncatedPredictions.
+    cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES = True
+
     cfg.INPUT.RANDOM_ROTATION = True
     cfg.INPUT.ROTATION_ANGLES = [0.0, 90.0, 180.0, 270.0]
     # if False, keep the image size and let the corners rotate out of frame

@@ -21,7 +21,10 @@ from .data.class_mapping import (
 )
 
 # periodic-eval speed: subsample DATASETS.TEST via cfg.DATASETS.TEST_SAMPLE_STRIDE
-from .data.datasets.register_hdf5_instance import apply_test_sample_stride
+from .data.datasets.register_hdf5_instance import (
+    apply_test_sample_stride,
+    apply_truncated_instance_filter,
+)
 
 # dataset loading
 from .data.dataset_mappers.coco_instance_new_baseline_dataset_mapper import COCOInstanceNewBaselineDatasetMapper

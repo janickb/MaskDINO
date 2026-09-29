@@ -88,6 +88,37 @@ def apply_test_sample_stride(cfg):
         DatasetCatalog.register(name, lambda sampled=sampled: sampled)
 
 
+def touches_frame_edge(x1, y1, x2, y2, height, width):
+    """True if box [x1, y1, x2, y2] (XYXY, absolute pixels) touches the frame
+    boundary."""
+    return x1 <= 0 or y1 <= 0 or x2 >= width or y2 >= height
+
+
+def _is_truncated(ann, height, width):
+    """True if ann's bbox touches the frame edge - bbox is a tight fit around
+    the segmentation mask (sgdata.coco.build_coco_annotations)."""
+    x, y, w, h = ann["bbox"]
+    return touches_frame_edge(x, y, x + w, y + h, height, width)
+
+
+def apply_truncated_instance_filter(cfg):
+    """Re-register each cfg.DATASETS.TEST dataset with frame-border-truncated
+    GT instances dropped, when cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES is set."""
+    if not cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES:
+        return
+    for name in cfg.DATASETS.TEST:
+        full = DatasetCatalog.get(name)
+        filtered = []
+        for d in full:
+            h, w = d["height"], d["width"]
+            kept = [a for a in d["annotations"] if not _is_truncated(a, h, w)]
+            filtered.append(
+                {**d, "annotations": kept} if len(kept) != len(d["annotations"]) else d
+            )
+        DatasetCatalog.remove(name)
+        DatasetCatalog.register(name, lambda filtered=filtered: filtered)
+
+
 def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
     """list_hdf5_dicts over one dir, optionally filtering file paths through
     `keep(path) -> bool`. 0-byte / unreadable frames are skipped with a warning.

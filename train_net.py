@@ -76,6 +76,7 @@ from maskdino import (
     ValidationLossHook,
     add_maskdino_config,
     apply_test_sample_stride,
+    apply_truncated_instance_filter,
     assert_train_test_class_mapping_consistent,
     build_warmup_cosine_restarts_lr_scheduler,
     set_num_classes_from_metadata,
@@ -271,7 +272,15 @@ class Trainer(DefaultTrainer):
             raise NotImplementedError(
                 f"no Evaluator for the dataset {dataset_name} with the type {evaluator_type}"
             )
-        elif len(evaluator_list) == 1:
+        if cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES:
+            # Prediction-side counterpart of apply_truncated_instance_filter's GT-side
+            # drop (register_hdf5_instance.py) - see truncated_prediction_filter.py.
+            from maskdino.evaluation.truncated_prediction_filter import (
+                DropTruncatedPredictions,
+            )
+
+            return DropTruncatedPredictions(evaluator_list)
+        if len(evaluator_list) == 1:
             return evaluator_list[0]
         return DatasetEvaluators(evaluator_list)
 
@@ -580,6 +589,7 @@ def setup(args):
     )
     set_num_classes_from_metadata(cfg, _ds_for_classes)
     apply_test_sample_stride(cfg)
+    apply_truncated_instance_filter(cfg)
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(
