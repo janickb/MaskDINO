@@ -58,11 +58,13 @@ def _wait_for_one_frame(pool_dir, timeout_s=1800.0):
         time.sleep(2.0)
 
 
-def register_hdf5_pool_instances(name, pool_dir, virtual_size, min_files):
+def register_hdf5_pool_instances(
+    name, pool_dir, virtual_size, min_files, class_mapping_fn=derive_class_mapping
+):
     sample_path = _wait_for_one_frame(pool_dir)
     with h5py.File(sample_path, "r") as f:
         instrument_classes = json.loads(f[schema.INSTRUMENT_CLASSES][()])
-    cm = derive_class_mapping(instrument_classes)
+    cm = class_mapping_fn(instrument_classes)
     DatasetCatalog.register(
         name,
         lambda: LivePoolDataset(

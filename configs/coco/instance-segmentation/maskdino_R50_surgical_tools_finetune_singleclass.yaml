@@ -2,17 +2,18 @@ _BASE_: maskdino_R50_bs16_50ep_3s.yaml
 MODEL:
   WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
   SEM_SEG_HEAD:
-     # Must cover the max category_id in the data + 1: the hdf5 loader uses
-    # category_id directly as the class index
-    NUM_CLASSES: 1
+    # -1 sentinel: train_seta_mm_singleclass/val_seta_mm_singleclass collapse
+    # every real instrument category into one "surgical-instruments" class (see
+    # class_mapping.derive_single_class_mapping), so this fills in to 1.
+    NUM_CLASSES: -1
   MaskDINO:
     NUM_OBJECT_QUERIES: 100
     TEST:
       HUNGARIAN_EVAL:
         ENABLED: True
 DATASETS:
-  TRAIN: ("train_seta",)
-  TEST: ("val_seta",)
+  TRAIN: ("train_seta_mm_singleclass",)
+  TEST: ("val_seta_mm_singleclass",)
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"
   IMAGE_SIZE: 1024
@@ -32,4 +33,4 @@ SOLVER:
   CHECKPOINT_PERIOD: 10000
 TEST:
   EVAL_PERIOD: 5000
-OUTPUT_DIR: "runs/single_class_v1"
+OUTPUT_DIR: "runs/single_class_v2"

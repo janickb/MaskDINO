@@ -22,6 +22,7 @@ sys.modules["class_mapping"] = cm_mod
 _spec.loader.exec_module(cm_mod)
 
 derive_class_mapping = cm_mod.derive_class_mapping
+derive_single_class_mapping = cm_mod.derive_single_class_mapping
 ClassMapping = cm_mod.ClassMapping
 remap_gt_category_ids = cm_mod.remap_gt_category_ids
 
@@ -194,6 +195,64 @@ def test_set_num_classes_no_marker_is_noop():
         assert cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES == 80
     finally:
         MetadataCatalog.remove(name)
+
+
+def test_derive_single_class_mapping_basics():
+    cm = derive_single_class_mapping(SETAB)
+    assert cm.num_classes == 1
+    assert cm.thing_classes == ["surgical-instruments"]
+    # every real (non-background, non-unused_) category_id from SETAB collapses to 0
+    real_ids = {1, 2, 3, 4, 5, 6, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18}
+    assert set(cm.thing_dataset_id_to_contiguous_id) == real_ids
+    assert set(cm.thing_dataset_id_to_contiguous_id.values()) == {0}
+
+
+def test_derive_single_class_mapping_custom_name():
+    cm = derive_single_class_mapping(SETB, class_name="tools")
+    assert cm.thing_classes == ["tools"]
+
+
+def test_derive_single_class_mapping_rejects_all_placeholder():
+    with pytest.raises(ValueError):
+        derive_single_class_mapping(["background", "unused_1", "unused_2"])
+
+
+def test_remap_gt_category_ids_collapses_to_single_class():
+    cm = derive_single_class_mapping(SETAB)
+    anns = [{"category_id": 11}, {"category_id": 1}, {"category_id": 18}]
+    remap_gt_category_ids(anns, cm)
+    assert [a["category_id"] for a in anns] == [0, 0, 0]
+
+
+def test_single_class_mappings_from_different_rosters_are_equal():
+    # SETB and SETAB have different instrument rosters (different real
+    # category_ids) - the collapsed mapping must still compare equal, since
+    # assert_train_test_class_mapping_consistent relies on this for a train/val
+    # pair that don't necessarily share every instrument.
+    cm_a = derive_single_class_mapping(SETB)
+    cm_b = derive_single_class_mapping(SETAB)
+    assert cm_a == cm_b
+    assert cm_a.contiguous_to_canonical[0]["category_id"] == -1
+
+
+def test_single_class_metadata_roundtrip_stays_consistent(tmp_path):
+    from detectron2.data import MetadataCatalog
+
+    name_a = f"_test_singleclass_a_{uuid.uuid4().hex}"
+    name_b = f"_test_singleclass_b_{uuid.uuid4().hex}"
+    cm_a = derive_single_class_mapping(SETB)
+    cm_b = derive_single_class_mapping(SETAB)
+    cm_mod.apply_class_mapping_to_metadata(name_a, cm_a)
+    cm_mod.apply_class_mapping_to_metadata(name_b, cm_b)
+    try:
+        md_a = MetadataCatalog.get(name_a)
+        md_b = MetadataCatalog.get(name_b)
+        assert md_a.thing_dataset_id_to_contiguous_id == {-1: 0}
+        assert md_b.thing_dataset_id_to_contiguous_id == {-1: 0}
+        assert ClassMapping.from_metadata(md_a) == ClassMapping.from_metadata(md_b)
+    finally:
+        MetadataCatalog.remove(name_a)
+        MetadataCatalog.remove(name_b)
 
 
 def test_write_and_load_sidecar(tmp_path):

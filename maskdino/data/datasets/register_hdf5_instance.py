@@ -13,6 +13,7 @@ from sgdata.coco import build_coco_annotations
 from ..class_mapping import (
     apply_class_mapping_to_metadata,
     derive_class_mapping,
+    derive_single_class_mapping,
     remap_gt_category_ids,
 )
 from .register_hdf5_pool_instance import (
@@ -36,6 +37,17 @@ _VAL_DIRS = {
     "val_seta_mm": "/home/janick.bilang/training/images/val_set_a_mm",
     "val_setab_mm": "/home/janick.bilang/training/images/val_set_ab_mm",
     "val_set_home": "/home/janick.bilang/training/images/val_set_home",
+}
+
+# Single-class ("surgical-instruments") views of train_seta_mm/val_seta_mm - same
+# underlying frames, but every real instrument category_id collapses onto one
+# contiguous class instead of one slot per instrument (see
+# class_mapping.derive_single_class_mapping).
+_TRAIN_POOL_DIRS_SINGLE_CLASS = {
+    "train_seta_mm_singleclass": _TRAIN_POOL_DIRS["train_seta_mm"],
+}
+_VAL_DIRS_SINGLE_CLASS = {
+    "val_seta_mm_singleclass": _VAL_DIRS["val_seta_mm"],
 }
 
 # --- Phase-2 classifier-retrain splits ("reclassification mode") --------------
@@ -240,33 +252,43 @@ def instrument_classes_from_hdf5(hdf5_dir):
         return json.loads(f[schema.INSTRUMENT_CLASSES][()])
 
 
-def register_hdf5_instances(name, hdf5_dir):
-    cm = derive_class_mapping(instrument_classes_from_hdf5(hdf5_dir))
+def register_hdf5_instances(name, hdf5_dir, class_mapping_fn=derive_class_mapping):
+    cm = class_mapping_fn(instrument_classes_from_hdf5(hdf5_dir))
     DatasetCatalog.register(name, _cached(name, lambda: list_hdf5_dicts(hdf5_dir, cm)))
     apply_class_mapping_to_metadata(name, cm)
 
 
 def register_all_hdf5_instances(root):
-    """Registers every _TRAIN_POOL_DIRS/_VAL_DIRS entry under its dict key,
-    skipping (with a warning) whichever variant has no rendered frames yet -
-    e.g. a set that's still being generated - so that one not-yet-ready
+    """Registers every _TRAIN_POOL_DIRS/_VAL_DIRS(+_SINGLE_CLASS) entry under its
+    dict key, skipping (with a warning) whichever variant has no rendered frames
+    yet - e.g. a set that's still being generated - so that one not-yet-ready
     variant can't break `import maskdino` for the others."""
     log = logging.getLogger(__name__)
-    for name, pool_dir in _TRAIN_POOL_DIRS.items():
+    for name, pool_dir in {**_TRAIN_POOL_DIRS, **_TRAIN_POOL_DIRS_SINGLE_CLASS}.items():
         if not pool_has_frames(pool_dir):
             log.warning(
                 "[%s] no frames yet in pool %s; skipping registration", name, pool_dir
             )
             continue
-        register_hdf5_pool_instances(name, pool_dir, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES)
-    for name, val_dirname in _VAL_DIRS.items():
+        class_mapping_fn = (
+            derive_single_class_mapping
+            if name in _TRAIN_POOL_DIRS_SINGLE_CLASS
+            else derive_class_mapping
+        )
+        register_hdf5_pool_instances(
+            name, pool_dir, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES, class_mapping_fn
+        )
+    for name, val_dirname in {**_VAL_DIRS, **_VAL_DIRS_SINGLE_CLASS}.items():
         val_dir = os.path.join(root, val_dirname)
         if _first_readable_hdf5(val_dir) is None:
             log.warning(
                 "[%s] no readable frames under %s; skipping registration", name, val_dir
             )
             continue
-        register_hdf5_instances(name, val_dir)
+        class_mapping_fn = (
+            derive_single_class_mapping if name in _VAL_DIRS_SINGLE_CLASS else derive_class_mapping
+        )
+        register_hdf5_instances(name, val_dir, class_mapping_fn)
     register_reclass_splits()
 
 
