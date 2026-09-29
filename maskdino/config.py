@@ -111,9 +111,6 @@ def add_maskdino_config(cfg):
     # is anchored on segmentation quality.
     cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_DECODER = False
     cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER = False
-    # Encoder params train at BASE_LR * this factor; only applied when
-    # UNFREEZE_ENCODER is True.
-    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENCODER_LR_MULTIPLIER = 0.1
 
     # -1 = "derive from the dataset": for datasets registered with a compact class
     # mapping (the surgical HDF5 loaders), train_net.setup() fills this in from the

@@ -24,7 +24,6 @@ MODEL:
       ENABLED: True
       UNFREEZE_DECODER: True
       UNFREEZE_ENCODER: True
-      ENCODER_LR_MULTIPLIER: 1.0
     TEST:
       HUNGARIAN_EVAL:
         PERIOD: 2000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
