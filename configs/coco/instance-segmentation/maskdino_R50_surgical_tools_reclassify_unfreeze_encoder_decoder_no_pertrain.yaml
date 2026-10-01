@@ -1,0 +1,46 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify.yaml
+# Phase-2 variant: same few-shot reclass set (set A + set B sparse renders), but
+# the transformer DECODER is unfrozen too - not just the linear class head. The
+# ResNet backbone and the MSDeformAttn pixel encoder (sem_seg_head.pixel_decoder)
+# stay frozen; the DINO decoder layers + the mask/box prediction heads they drive
+# train at BASE_LR, same as class_embed. Motivation: in the frozen-decoder baseline (runs/reclassify_v2) the
+# set-A instruments have class-agnostic recall ~0.0-0.5 - the frozen decoder does
+# not even localize them, so a class-head-only retrain cannot recover them.
+#
+# Because the decoder is trainable, RECLASSIFY_FINETUNE no longer forces a
+# labels-only loss: mask + box losses and deep supervision come back so the
+# decoder is anchored on segmentation quality (see maskdino/maskdino.py).
+#
+# This is a DISTINCT experimental condition from reclassify_v2 - it no longer
+# answers "are the frozen query embeddings linearly separable"; keep v2 as that
+# baseline.
+MODEL:
+  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
+  MaskDINO:
+    DROPOUT: 0.0                      # keep the train/eval-equivalence assumption
+                                     # (maskdino.py NOTE ~L283); revisit if the
+                                     # eval curve shows overfitting
+    RECLASSIFY_FINETUNE:
+      ENABLED: True
+      UNFREEZE_DECODER: True
+      UNFREEZE_ENCODER: True
+      ENCODER_LR_MULTIPLIER: 1.0
+    TEST:
+      HUNGARIAN_EVAL:
+        PERIOD: 6000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0003
+  MAX_ITER: 60000
+  LR_SCHEDULER_NAME: "WarmupCosineLR"   # SGDR: one warm restart, not a single decay
+  BASE_LR_END: 0.000003                 # cosine floor of every cycle = 1% of BASE_LR
+  WARMUP_ITERS: 500
+  WARMUP_FACTOR: 0.0001                  # real linear ramp; Base-COCO inherits 1.0 (= no ramp)
+  CHECKPOINT_PERIOD: 10000   # /home quota is tight - keep few ~500MB checkpoints
+
+
+TEST:
+  # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
+  # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
+  EVAL_PERIOD: 2000                   # watch for decoder drift / overfit early
+OUTPUT_DIR: "runs/reclassify_unfreeze_encoder_decoder_v3_no-phase-1-model_long"
