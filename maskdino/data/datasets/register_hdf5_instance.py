@@ -35,6 +35,7 @@ _TRAIN_POOL_DIRS = {
 _VAL_DIRS = {
     "val_seta_mm": "/home/janick.bilang/training/images/val_set_a_mm",
     "val_setab_mm": "/home/janick.bilang/training/images/val_set_ab_mm",
+    "val_set_home": "/home/janick.bilang/training/images/val_set_home",
 }
 
 # --- Phase-2 classifier-retrain splits ("reclassification mode") --------------
@@ -46,6 +47,7 @@ _VAL_DIRS = {
 # instance_segmaps + instance_attribute_maps (same output as sgdata.backfill).
 _RECLASS_TRAIN_DIRS = {
     "reclass_setab_mm": "/home/janick.bilang/training/images/train_phase2_set_ab_mm",
+    "reclass_set_home": "/home/janick.bilang/training/images/train_phase2_set_home",
 }
 
 
