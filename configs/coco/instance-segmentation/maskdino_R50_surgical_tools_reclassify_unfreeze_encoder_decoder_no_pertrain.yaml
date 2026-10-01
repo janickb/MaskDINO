@@ -31,7 +31,7 @@ MODEL:
 SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.0003
-  MAX_ITER: 60000
+  MAX_ITER: 100000
   LR_SCHEDULER_NAME: "WarmupCosineLR"   # SGDR: one warm restart, not a single decay
   BASE_LR_END: 0.000003                 # cosine floor of every cycle = 1% of BASE_LR
   WARMUP_ITERS: 500
