@@ -450,7 +450,11 @@ class Trainer(DefaultTrainer):
 
         if self.cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED:
             val_loader = self.build_val_loss_loader(self.cfg, self.cfg.DATASETS.TEST[0])
-            ret.append(ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader))
+            idx = next(
+                (i for i, h in enumerate(ret) if isinstance(h, hooks.PeriodicWriter)),
+                len(ret),
+            )
+            ret.insert(idx, ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader))
 
         return ret
 
