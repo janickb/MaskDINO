@@ -165,6 +165,14 @@ def add_maskdino_config(cfg):
     # GT visibility filtering is NOT a separate knob: the evaluator always reuses
     # INPUT.MIN_VISIBILITY so "recall" is measured against the same GT the model trained on.
 
+    # Validation loss (maskdino/solver/val_loss.py): the same loss function
+    # training uses (self.criterion under MaskDINO.forward's self.training
+    # branch), just averaged over DATASETS.TEST[0] instead of the current
+    # training batch, and written to EventStorage as "validation_loss" /
+    # "val_<component>" alongside "total_loss". Runs at TEST.EVAL_PERIOD cadence.
+    cfg.MODEL.MaskDINO.TEST.VAL_LOSS = CN()
+    cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED = False   # default off -> existing runs unchanged
+
     # 1 = no subsampling (default; every existing config is unaffected). N>1 keeps
     cfg.DATASETS.TEST_SAMPLE_STRIDE = 1
 
@@ -188,6 +196,11 @@ def add_maskdino_config(cfg):
     cfg.INPUT.MAX_SCALE = 2.0
 
     cfg.INPUT.MIN_VISIBILITY = 0.0
+
+    # Drop GT + predicted instances cut off by the frame edge from evaluation
+    # (DATASETS.TEST only) - unlike MIN_VISIBILITY, which is occlusion, not
+    # truncation. See apply_truncated_instance_filter / DropTruncatedPredictions.
+    cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES = True
 
     cfg.INPUT.RANDOM_ROTATION = True
     cfg.INPUT.ROTATION_ANGLES = [0.0, 90.0, 180.0, 270.0]

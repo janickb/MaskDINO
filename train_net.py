@@ -73,8 +73,10 @@ from maskdino import (
     PlateauLRHook,
     PlateauLRScheduler,
     SemanticSegmentorWithTTA,
+    ValidationLossHook,
     add_maskdino_config,
     apply_test_sample_stride,
+    apply_truncated_instance_filter,
     assert_train_test_class_mapping_consistent,
     build_warmup_cosine_restarts_lr_scheduler,
     set_num_classes_from_metadata,
@@ -270,7 +272,15 @@ class Trainer(DefaultTrainer):
             raise NotImplementedError(
                 f"no Evaluator for the dataset {dataset_name} with the type {evaluator_type}"
             )
-        elif len(evaluator_list) == 1:
+        if cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES:
+            # Prediction-side counterpart of apply_truncated_instance_filter's GT-side
+            # drop (register_hdf5_instance.py) - see truncated_prediction_filter.py.
+            from maskdino.evaluation.truncated_prediction_filter import (
+                DropTruncatedPredictions,
+            )
+
+            return DropTruncatedPredictions(evaluator_list)
+        if len(evaluator_list) == 1:
             return evaluator_list[0]
         return DatasetEvaluators(evaluator_list)
 
@@ -331,6 +341,22 @@ class Trainer(DefaultTrainer):
         return build_detection_test_loader(cfg, dataset_name)
 
     @classmethod
+    def build_val_loss_loader(cls, cfg, dataset_name):
+        """Like build_test_loader(), but with an is_train=True mapper so GT
+        "instances" are attached - required by ValidationLossHook, since the
+        model only takes the loss branch (vs. inference) when self.training is
+        True, and that branch reads batched_inputs[0]["instances"] (see
+        maskdino/solver/val_loss.py). Only wired up for hdf5_coco_instance - the
+        mapper the reclassify configs actually use.
+        """
+        assert cfg.INPUT.DATASET_MAPPER_NAME == "hdf5_coco_instance", (
+            f"VAL_LOSS only supports DATASET_MAPPER_NAME=hdf5_coco_instance, "
+            f"got {cfg.INPUT.DATASET_MAPPER_NAME!r}"
+        )
+        mapper = Hdf5CocoInstanceDatasetMapper(cfg, True)
+        return build_detection_test_loader(cfg, dataset_name, mapper=mapper)
+
+    @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
         """
         It now calls :func:`detectron2.solver.build_lr_scheduler`, except for two
@@ -377,6 +403,11 @@ class Trainer(DefaultTrainer):
         not the bbox/segm AP that SOLVER.PLATEAU/TensorBoard actually track - so it
         doesn't need to run as often. See build_evaluator()'s include_coco/
         include_hungarian params.
+
+        Also adds ValidationLossHook when MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED -
+        logs "validation_loss" (+ "val_<component>") to EventStorage at
+        TEST.EVAL_PERIOD cadence, using the exact same loss function training
+        does, just evaluated on DATASETS.TEST[0] - see maskdino/solver/val_loss.py.
         """
         ret = super().build_hooks()
         if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
@@ -416,6 +447,14 @@ class Trainer(DefaultTrainer):
                 hooks.EvalHook(self.cfg.TEST.EVAL_PERIOD, cheap_test_and_save_results),
                 hooks.EvalHook(he.PERIOD, hungarian_test_and_save_results),
             ]
+
+        if self.cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED:
+            val_loader = self.build_val_loss_loader(self.cfg, self.cfg.DATASETS.TEST[0])
+            idx = next(
+                (i for i, h in enumerate(ret) if isinstance(h, hooks.PeriodicWriter)),
+                len(ret),
+            )
+            ret.insert(idx, ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader))
 
         return ret
 
@@ -554,6 +593,7 @@ def setup(args):
     )
     set_num_classes_from_metadata(cfg, _ds_for_classes)
     apply_test_sample_stride(cfg)
+    apply_truncated_instance_filter(cfg)
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(

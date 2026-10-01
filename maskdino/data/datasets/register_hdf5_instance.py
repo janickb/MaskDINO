@@ -35,6 +35,7 @@ _TRAIN_POOL_DIRS = {
 _VAL_DIRS = {
     "val_seta_mm": "/home/janick.bilang/training/images/val_set_a_mm",
     "val_setab_mm": "/home/janick.bilang/training/images/val_set_ab_mm",
+    "val_set_home": "/home/janick.bilang/training/images/val_set_home",
 }
 
 # --- Phase-2 classifier-retrain splits ("reclassification mode") --------------
@@ -46,6 +47,7 @@ _VAL_DIRS = {
 # instance_segmaps + instance_attribute_maps (same output as sgdata.backfill).
 _RECLASS_TRAIN_DIRS = {
     "reclass_setab_mm": "/home/janick.bilang/training/images/train_phase2_set_ab_mm",
+    "reclass_set_home": "/home/janick.bilang/training/images/train_phase2_set_home",
 }
 
 
@@ -86,6 +88,37 @@ def apply_test_sample_stride(cfg):
         sampled = full[::stride]
         DatasetCatalog.remove(name)
         DatasetCatalog.register(name, lambda sampled=sampled: sampled)
+
+
+def touches_frame_edge(x1, y1, x2, y2, height, width):
+    """True if box [x1, y1, x2, y2] (XYXY, absolute pixels) touches the frame
+    boundary."""
+    return x1 <= 0 or y1 <= 0 or x2 >= width or y2 >= height
+
+
+def _is_truncated(ann, height, width):
+    """True if ann's bbox touches the frame edge - bbox is a tight fit around
+    the segmentation mask (sgdata.coco.build_coco_annotations)."""
+    x, y, w, h = ann["bbox"]
+    return touches_frame_edge(x, y, x + w, y + h, height, width)
+
+
+def apply_truncated_instance_filter(cfg):
+    """Re-register each cfg.DATASETS.TEST dataset with frame-border-truncated
+    GT instances dropped, when cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES is set."""
+    if not cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES:
+        return
+    for name in cfg.DATASETS.TEST:
+        full = DatasetCatalog.get(name)
+        filtered = []
+        for d in full:
+            h, w = d["height"], d["width"]
+            kept = [a for a in d["annotations"] if not _is_truncated(a, h, w)]
+            filtered.append(
+                {**d, "annotations": kept} if len(kept) != len(d["annotations"]) else d
+            )
+        DatasetCatalog.remove(name)
+        DatasetCatalog.register(name, lambda filtered=filtered: filtered)
 
 
 def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
