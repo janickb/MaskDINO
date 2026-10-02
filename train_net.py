@@ -405,7 +405,7 @@ class Trainer(DefaultTrainer):
         include_hungarian params.
 
         Also adds ValidationLossHook when MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED -
-        logs "validation_loss" (+ "val_<component>") to EventStorage at
+        logs a single "validation_loss" scalar to EventStorage at
         TEST.EVAL_PERIOD cadence, using the exact same loss function training
         does, just evaluated on DATASETS.TEST[0] - see maskdino/solver/val_loss.py.
         """

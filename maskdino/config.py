@@ -165,8 +165,8 @@ def add_maskdino_config(cfg):
     # Validation loss (maskdino/solver/val_loss.py): the same loss function
     # training uses (self.criterion under MaskDINO.forward's self.training
     # branch), just averaged over DATASETS.TEST[0] instead of the current
-    # training batch, and written to EventStorage as "validation_loss" /
-    # "val_<component>" alongside "total_loss". Runs at TEST.EVAL_PERIOD cadence.
+    # training batch, and written to EventStorage as a single "validation_loss"
+    # scalar alongside "total_loss". Runs at TEST.EVAL_PERIOD cadence.
     cfg.MODEL.MaskDINO.TEST.VAL_LOSS = CN()
     cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED = False   # default off -> existing runs unchanged
 
