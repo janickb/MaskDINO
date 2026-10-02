@@ -51,7 +51,7 @@ MODEL:
       PANOPTIC_ON: False
       OVERLAP_THRESHOLD: 0.8
       OBJECT_MASK_THRESHOLD: 0.25
-      # Logs "validation_loss" (+ "val_<component>") to TensorBoard/metrics.json
+      # Logs a single "validation_loss" to TensorBoard/metrics.json
       # alongside "total_loss", at TEST.EVAL_PERIOD cadence - see
       # maskdino/solver/val_loss.py. Every config that currently inherits this
       # base sets DATASET_MAPPER_NAME: hdf5_coco_instance and a single-dataset

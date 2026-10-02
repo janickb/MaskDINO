@@ -75,9 +75,9 @@ def test_computes_mean_and_restores_eval_mode():
         hook.trainer = _FakeTrainer(model, storage, 4, 100)  # next_iter = 5 -> boundary
         hook.after_step()
 
-    assert storage.history("val_loss_ce").latest() == 2.0
-    assert storage.history("val_loss_mask").latest() == 4.0
+
     assert storage.history("validation_loss").latest() == 6.0
+    assert [k for k in storage.histories() if k.startswith("val_")] == []
     # model was .eval() before the check and must be restored to .eval() after
     assert model.training is False
 
