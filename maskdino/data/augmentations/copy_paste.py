@@ -170,6 +170,66 @@ class CopyPasteCompositor:
         )
         return cache
 
+    @staticmethod
+    def _index_by_class(cache):
+        """category_id -> list of its positions in `cache`, for class-balanced
+        paste sampling (see _sample_instance_indices)."""
+        by_class = {}
+        for i, (_, _, category_id) in enumerate(cache):
+            by_class.setdefault(category_id, []).append(i)
+        if by_class:
+            counts = sorted(len(v) for v in by_class.values())
+            logger.info(
+                "[CopyPasteCompositor] %d class(es) in the paste pool, "
+                "%d-%d render(s) each - sampling is class-balanced, so the "
+                "%dx spread in render count no longer biases paste frequency",
+                len(by_class),
+                counts[0],
+                counts[-1],
+                max(1, round(counts[-1] / max(counts[0], 1))),
+            )
+        return by_class
+
+    def _sample_instance_indices(self, k):
+        """Pick k cache positions with every class equally likely, instead of
+        uniformly over the flat pool.
+
+        Uniform-over-pool sampling makes a class's paste frequency proportional
+        to how many renders it happens to have - with 40 renders for some
+        classes and 20 for the rest that is a 2x exposure difference that has
+        nothing to do with the experiment. Here a shuffled class list is walked
+        instead, so for k <= num_classes every pasted instrument is a *different*
+        class (maximal in-frame class diversity, which is also the contrastive
+        pressure that fine-grained pairs like forcep03/forcep04 need), and for
+        larger k the list wraps and a class may recur.
+
+        Within a chosen class the render is drawn uniformly, without replacement
+        across repeats of that class, so a frame never shows the same crop twice
+        (unreachable in practice: it needs k > num_classes * renders_per_class).
+        The result is shuffled because paste order decides who occludes whom -
+        returning it grouped by class would make later-drawn classes
+        systematically the occluders.
+        """
+        classes = list(self._cache_by_class)
+        if not classes:
+            return []
+        random.shuffle(classes)
+
+        wanted = {}
+        for i in range(k):
+            cid = classes[i % len(classes)]
+            wanted[cid] = wanted.get(cid, 0) + 1
+
+        picked = []
+        for cid, count in wanted.items():
+            idxs = self._cache_by_class[cid]
+            if count <= len(idxs):
+                picked.extend(random.sample(idxs, count))
+            else:  # more repeats than renders - fall back to with-replacement
+                picked.extend(random.choices(idxs, k=count))
+        random.shuffle(picked)
+        return picked
+
     def __call__(self, image, annotations):
         """Returns (composite_image, updated_annotations). `image` is never
         mutated in place (a copy is composited and returned); `annotations` dicts
