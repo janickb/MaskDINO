@@ -125,6 +125,7 @@ class CopyPasteCompositor:
         self.cluster_stray_fraction = cluster_stray_fraction
         self._crop_margin_px = max(self.blur_kernel_range[1] // 2 + 1, 0)
         self._instance_cache = self._build_instance_cache(source_dicts)
+        self._cache_by_class = self._index_by_class(self._instance_cache)
 
     def _build_instance_cache(self, source_dicts):
         """Extract every eligible instance's raw crop + mask once, reading each
@@ -248,7 +249,6 @@ class CopyPasteCompositor:
                 continue
             layers.append({"ann": ann, "visible": mask, "nominal_area": nominal_area})
 
-        n = len(self._instance_cache)
         k = random.randint(self.min_instances, self.max_instances)
 
         # Per-frame mode pick: with probability cluster_prob this whole call
@@ -263,7 +263,7 @@ class CopyPasteCompositor:
             cluster_std = (sigma, sigma)
 
         pasted = 0
-        for idx in random.sample(range(n), min(k, n)):
+        for idx in self._sample_instance_indices(k):
             crop, crop_mask, category_id = self._instance_cache[idx]
 
             patch, patch_mask, valid_footprint = self._transform_instance(crop, crop_mask)
