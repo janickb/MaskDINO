@@ -1,8 +1,10 @@
 """Periodic validation loss: mirrors the "total_loss" that training already
 writes to EventStorage every step, but averaged over the validation set instead
 of the current training batch, so it shows up alongside "total_loss" in
-TensorBoard / metrics.json / the console (as "validation_loss", plus a "val_"
-prefixed copy of each loss component for the same side-by-side comparison).
+TensorBoard / metrics.json / the console as a single "validation_loss" scalar.
+
+Deliberately *only* the weighted total, not a "val_" copy of each loss
+component - see the note in after_step().
 
 This is the exact same loss function training uses - not a proxy metric. The
 model only takes the loss branch (vs. its inference branch) when self.training
@@ -47,7 +49,7 @@ logger = logging.getLogger(__name__)
 class ValidationLossHook(HookBase):
     """Every `period` iterations (and on the final iteration), runs the model's
     loss branch over `loader` (sharded per-rank like any detectron2 test loader)
-    and writes the cross-rank average to EventStorage.
+    and writes the cross-rank average to EventStorage as "validation_loss".
     """
 
     def __init__(self, period, loader):
@@ -138,7 +140,4 @@ class ValidationLossHook(HookBase):
                 totals[k] = totals.get(k, 0.0) + v
         means = {k: v / total_n for k, v in totals.items()}
 
-        storage = self.trainer.storage
-        for k, v in means.items():
-            storage.put_scalar(f"val_{k}", v)
-        storage.put_scalar("validation_loss", sum(means.values()))
+        self.trainer.storage.put_scalar("validation_loss", sum(means.values()))
