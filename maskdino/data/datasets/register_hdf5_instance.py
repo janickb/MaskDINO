@@ -5,7 +5,6 @@ import logging
 import os
 
 import h5py
-
 from detectron2.data import DatasetCatalog
 from sgdata import schema
 from sgdata.coco import build_coco_annotations
@@ -30,12 +29,13 @@ from .register_hdf5_pool_instance import (
 # variant with no rendered frames yet is skipped with a warning instead of
 # blocking/crashing `import maskdino`.
 _TRAIN_POOL_DIRS = {
-    "train_seta_mm": "/home/janick.bilang/training/images/train_phase1_pool_set_a_mm",
+    "train_seta_mm": "/home/janick.bilang/train_images/train_phase1_pool_set_a_mm",
 }
 _VAL_DIRS = {
-    "val_seta_mm": "/home/janick.bilang/training/images/val_set_a_mm",
-    "val_setab_mm": "/home/janick.bilang/training/images/val_set_ab_mm",
-    "val_set_home": "/home/janick.bilang/training/images/val_set_home",
+    "val_seta_mm": "/home/janick.bilang/train_images/val_set_a_mm",
+    "val_setab_mm": "/home/janick.bilang/train_images/val_set_ab_mm",
+    "val_setab_v2_mm": "/home/janick.bilang/train_images/val_set_ab_v3_mm",
+    "val_set_home": "/home/janick.bilang/train_images/val_set_home",
 }
 
 # --- Phase-2 classifier-retrain splits ("reclassification mode") --------------
@@ -46,8 +46,9 @@ _VAL_DIRS = {
 # omits `coco_annotations`, so they are built on the fly from
 # instance_segmaps + instance_attribute_maps (same output as sgdata.backfill).
 _RECLASS_TRAIN_DIRS = {
-    "reclass_setab_mm": "/home/janick.bilang/training/images/train_phase2_set_ab_mm",
-    "reclass_set_home": "/home/janick.bilang/training/images/train_phase2_set_home",
+    "reclass_setab_mm": "/home/janick.bilang/train_images/train_phase2_set_ab_mm",
+    "reclass_setab_v2_mm": "/home/janick.bilang/train_images/train_phase2_set_ab_v3_mm",
+    "reclass_set_home": "/home/janick.bilang/train_images/train_phase2_set_home",
 }
 
 
@@ -66,10 +67,12 @@ def _cached(name, build_fn):
     HDF5 metadata scan once per process, instead of once per caller (test-loader build,
     COCOEvaluator's json conversion, HungarianInstanceEvaluator's own GT index) on every
     single periodic eval tick - DatasetCatalog.get() is not memoized by detectron2."""
+
     def get():
         if name not in _dataset_dicts_cache:
             _dataset_dicts_cache[name] = build_fn()
         return _dataset_dicts_cache[name]
+
     return get
 
 
@@ -158,7 +161,9 @@ def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
             }
         )
     if not dicts:
-        log.warning("[reclass] 0 usable frames from %s (filter/keep too strict?)", hdf5_dir)
+        log.warning(
+            "[reclass] 0 usable frames from %s (filter/keep too strict?)", hdf5_dir
+        )
     return dicts
 
 
@@ -258,7 +263,9 @@ def register_all_hdf5_instances(root):
                 "[%s] no frames yet in pool %s; skipping registration", name, pool_dir
             )
             continue
-        register_hdf5_pool_instances(name, pool_dir, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES)
+        register_hdf5_pool_instances(
+            name, pool_dir, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES
+        )
     for name, val_dirname in _VAL_DIRS.items():
         val_dir = os.path.join(root, val_dirname)
         if _first_readable_hdf5(val_dir) is None:
