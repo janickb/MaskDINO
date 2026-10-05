@@ -62,15 +62,40 @@ class ValidationLossHook(HookBase):
         self._loader = loader
         self._warned_empty = False
 
+    def _steps_this_rank(self):
+        """Number of val batches EVERY rank must run - the per-rank minimum.
+
+        The training-mode loss runs a torch.distributed.all_reduce over num_masks
+        inside SetCriterion.forward (both architectures: maskdino/modeling/criterion.py
+        and mask2former/modeling/criterion.py). So one forward pass == one collective,
+        and every rank has to perform the SAME number of them or the collectives
+        mismatch and the job deadlocks until gloo's 30-minute timeout.
+
+        build_detection_test_loader shards the validation set with InferenceSampler,
+        which hands the remainder to the lower ranks - so the shards are uneven whenever
+        len(dataset) is not divisible by the world size (e.g. 3 images over 2 ranks ->
+        2 and 1). Truncating every rank to the global minimum costs at most
+        world_size - 1 batches of the validation average and keeps the collectives
+        matched.
+        """
+        try:
+            local = len(self._loader)
+        except TypeError:  # loader without __len__; fall back to no truncation
+            return None
+        return min(comm.all_gather(local))
+
     def _local_loss_sums(self):
         model = self.trainer.model
         was_training = model.training
         model.train()
         sums: dict[str, float] = {}
         n_batches = 0
+        n_steps = self._steps_this_rank()
         try:
             with torch.no_grad():
-                for batch in self._loader:
+                for i, batch in enumerate(self._loader):
+                    if n_steps is not None and i >= n_steps:
+                        break
                     losses = model(batch)
                     for k, v in losses.items():
                         sums[k] = sums.get(k, 0.0) + float(v)

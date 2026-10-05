@@ -113,3 +113,83 @@ def test_empty_loader_warns_and_skips():
         hook.trainer = _FakeTrainer(model, storage, 0, 100)
         hook.after_step()
     assert "validation_loss" not in storage.histories()
+
+
+# ---------------------------------------------------------------------------
+# DDP: the training-mode loss runs torch.distributed.all_reduce(num_masks) inside
+# SetCriterion.forward (BOTH architectures), so one forward pass == one collective.
+# Every rank must therefore run the SAME number of val batches, or the collectives
+# mismatch and the job deadlocks until gloo's 30-minute timeout.
+#
+# build_detection_test_loader shards the val set with InferenceSampler, which gives the
+# remainder to the lower ranks - so shards are uneven whenever len(dataset) is not
+# divisible by the world size (3 images over 2 ranks -> 2 and 1). Observed in practice
+# as: rank 0 pinned at 100% GPU inside all_reduce, rank 1 idle, both logs frozen.
+# ---------------------------------------------------------------------------
+
+
+class _CountingLoader:
+    """Loader of `n` dummy batches that records how many were consumed."""
+
+    def __init__(self, n):
+        self._n = n
+        self.consumed = 0
+
+    def __len__(self):
+        return self._n
+
+    def __iter__(self):
+        for _ in range(self._n):
+            self.consumed += 1
+            yield [{}]
+
+
+def _hook_with(loader, gathered_lengths, monkeypatch):
+    from maskdino.solver import val_loss as val_loss_mod
+
+    hook = val_loss_mod.ValidationLossHook(period=1, loader=loader)
+    monkeypatch.setattr(val_loss_mod.comm, "all_gather", lambda v: list(gathered_lengths))
+    return hook
+
+
+def test_every_rank_runs_the_global_minimum_batch_count(monkeypatch):
+    """This rank has 2 batches, the other has 1 -> both must run 1."""
+    loader = _CountingLoader(2)
+    hook = _hook_with(loader, [2, 1], monkeypatch)
+    assert hook._steps_this_rank() == 1
+
+
+def test_even_shards_are_not_truncated(monkeypatch):
+    loader = _CountingLoader(128)
+    hook = _hook_with(loader, [128, 128], monkeypatch)
+    assert hook._steps_this_rank() == 128
+
+
+def test_single_process_is_unaffected(monkeypatch):
+    loader = _CountingLoader(7)
+    hook = _hook_with(loader, [7], monkeypatch)
+    assert hook._steps_this_rank() == 7
+
+
+def test_loader_without_len_disables_truncation(monkeypatch):
+    class _NoLen:
+        def __iter__(self):
+            return iter([])
+
+    from maskdino.solver import val_loss as val_loss_mod
+
+    hook = val_loss_mod.ValidationLossHook(period=1, loader=_NoLen())
+    assert hook._steps_this_rank() is None
+
+
+def test_criterion_really_contains_a_collective():
+    """If this ever stops being true the truncation above is no longer needed - but
+    while it holds, unequal batch counts across ranks are a hard deadlock."""
+    import inspect
+
+    from mask2former.modeling.criterion import SetCriterion as M2FCriterion
+    from maskdino.modeling.criterion import SetCriterion as DinoCriterion
+
+    for crit in (M2FCriterion, DinoCriterion):
+        src = inspect.getsource(crit.forward)
+        assert "all_reduce" in src, crit
