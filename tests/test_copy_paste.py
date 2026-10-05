@@ -531,3 +531,26 @@ def test_poisson_blend_mode_falls_back_gracefully_in_full_call(compositor_factor
 
     assert len(new_anns) == 1
     assert mask_util.decode(new_anns[0]["segmentation"]).sum() > 0
+
+
+def test_returned_annotations_match_evaluator_gt_contract(compositor_factory):
+    """Pins what tools/eval_composited_confusion.py hands to
+    HungarianInstanceEvaluator._load_gt_masks: every annotation must decode to a
+    full-frame (H, W) mask and carry a category_id from the source class space,
+    with no conversion step in between."""
+    random.seed(7)
+    compositor, _ = compositor_factory(min_instances=3, max_instances=3)
+    dest = _solid_image(64, 0)
+    dest_ann = _make_ann(_solid_rect_mask(size=64, margin=20), category_id=5)
+
+    _, anns = compositor(dest, [dest_ann])
+
+    assert len(anns) >= 2
+    for ann in anns:
+        assert ann["category_id"] in {5, 6, 7}
+        assert ann["iscrowd"] == 0
+        assert ann["bbox_mode"] == 1
+        assert 0.0 <= ann["visibility_fraction"] <= 1.0
+        mask = mask_util.decode(ann["segmentation"])
+        assert mask.shape == (64, 64)
+        assert mask.dtype == np.uint8
