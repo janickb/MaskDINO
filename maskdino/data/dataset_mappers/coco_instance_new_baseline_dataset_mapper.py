@@ -75,16 +75,6 @@ def build_transform_gen(cfg, is_train):
         T.ResizeScale(
             min_scale=min_scale, max_scale=max_scale, target_height=image_size, target_width=image_size
         ),
-        # seg_pad_value=0, NOT detectron2's default of 255. When ResizeScale picks a
-        # scale < 1.0 the image is smaller than IMAGE_SIZE and FixedSizeCrop pads it;
-        # PadTransform pads the SEGMENTATION with seg_pad_value. 255 is the semantic-
-        # segmentation "ignore" label and is harmless on the polygon path upstream
-        # Mask2Former uses, but this fork feeds RLE masks through
-        # mask_format="bitmask", and BitMasks casts every non-zero value to True - so
-        # the whole padding region silently became part of EVERY instance's GT mask.
-        # Measured on train_seta_mm at MIN/MAX_SCALE 0.8/1.2: 44% of frames affected,
-        # each instance's mask covering ~23% of the image instead of the instrument.
-        # See tests/test_fixed_size_crop_seg_padding.py.
         T.FixedSizeCrop(crop_size=(image_size, image_size), seg_pad_value=0),
         T.RandomBrightness(0.7, 1.3),
         T.RandomContrast(0.7, 1.3),
