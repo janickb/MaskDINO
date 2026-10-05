@@ -176,6 +176,18 @@ class Trainer(DefaultTrainer):
         # instance segmentation
         if evaluator_type == "coco":
             if include_coco:
+                # Single-class mode: COCO AP averages over the eval set's categories,
+                # so a 1-class head scored against an N-category GT silently reports
+                # AP/N. The *_singleclass datasets collapse GT to one category to keep
+                # this meaningful - say so, since set_num_classes_from_metadata()'s own
+                # warning fires before setup_logger() and never reaches log.txt.
+                if cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES == 1:
+                    logging.getLogger("maskdino").info(
+                        "[build_evaluator] NUM_CLASSES == 1: %r reports class-agnostic "
+                        "bbox/segm AP over %d GT category/categories.",
+                        dataset_name,
+                        len(MetadataCatalog.get(dataset_name).thing_classes),
+                    )
                 evaluator_list.append(
                     COCOEvaluator(
                         dataset_name, output_dir=output_folder, allow_cached_coco=False
