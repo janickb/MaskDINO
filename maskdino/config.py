@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # ------------------------------------------------------------------------
 # Copyright (c) 2022 IDEA. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
@@ -32,26 +31,40 @@ def add_maskdino_config(cfg):
     # consulted when SOLVER.LR_SCHEDULER_NAME == "WarmupCosineRestartsLR".
     cfg.SOLVER.COSINE_RESTARTS = CN()
     cfg.SOLVER.COSINE_RESTARTS.T_0 = 1000  # iters; length of the first cycle
-    cfg.SOLVER.COSINE_RESTARTS.T_MULT = 2.0  # growth factor per restart (2.0 = classic SGDR)
+    cfg.SOLVER.COSINE_RESTARTS.T_MULT = (
+        2.0  # growth factor per restart (2.0 = classic SGDR)
+    )
     # Soften every restart after cycle 0 with its own short ramp instead of snapping
     # straight to BASE_LR (plain SGDR). Both default to 0.0 = warm restarts, unchanged.
-    cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FACTOR = 0.0  # start-of-restart LR, as a fraction of BASE_LR
-    cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FRACTION = 0.0  # fraction of each restart cycle spent ramping
+    cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FACTOR = (
+        0.0  # start-of-restart LR, as a fraction of BASE_LR
+    )
+    cfg.SOLVER.COSINE_RESTARTS.RESTART_WARMUP_FRACTION = (
+        0.0  # fraction of each restart cycle spent ramping
+    )
 
     # Adaptive alternative to the fixed schedules above (maskdino/solver/plateau.py).
     # Only consulted when SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau".
     cfg.SOLVER.PLATEAU = CN()
     cfg.SOLVER.PLATEAU.METRIC = "total_loss"  # EventStorage key to monitor
-    cfg.SOLVER.PLATEAU.MODE = "min"  # "min" for a loss-like metric, "max" for accuracy-like
+    cfg.SOLVER.PLATEAU.MODE = (
+        "min"  # "min" for a loss-like metric, "max" for accuracy-like
+    )
     cfg.SOLVER.PLATEAU.FACTOR = 0.5  # multiply LR by this on each reduction
     cfg.SOLVER.PLATEAU.PATIENCE = 3  # checks with no improvement before reducing
-    cfg.SOLVER.PLATEAU.THRESHOLD = 1e-4  # min relative improvement to count as "improved"
-    cfg.SOLVER.PLATEAU.COOLDOWN = 0  # checks to wait after a reduction before resuming patience
+    cfg.SOLVER.PLATEAU.THRESHOLD = (
+        1e-4  # min relative improvement to count as "improved"
+    )
+    cfg.SOLVER.PLATEAU.COOLDOWN = (
+        0  # checks to wait after a reduction before resuming patience
+    )
     # Floor for BASE_LR specifically; every param group (e.g. the backbone at
     # BACKBONE_MULTIPLIER x BASE_LR) is floored at the same fraction of its own
     # base, not this absolute number - see PlateauLRScheduler's docstring.
     cfg.SOLVER.PLATEAU.MIN_LR = 0.0
-    cfg.SOLVER.PLATEAU.CHECK_PERIOD = 0  # iters between checks; 0 = disabled even if selected
+    cfg.SOLVER.PLATEAU.CHECK_PERIOD = (
+        0  # iters between checks; 0 = disabled even if selected
+    )
 
     # MaskDINO model config
     cfg.MODEL.MaskDINO = CN()
@@ -65,15 +78,15 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.CLASS_WEIGHT = 4.0
     cfg.MODEL.MaskDINO.DICE_WEIGHT = 5.0
     cfg.MODEL.MaskDINO.MASK_WEIGHT = 5.0
-    cfg.MODEL.MaskDINO.BOX_WEIGHT = 5.
-    cfg.MODEL.MaskDINO.GIOU_WEIGHT = 2.
+    cfg.MODEL.MaskDINO.BOX_WEIGHT = 5.0
+    cfg.MODEL.MaskDINO.GIOU_WEIGHT = 2.0
 
     # cost weight
     cfg.MODEL.MaskDINO.COST_CLASS_WEIGHT = 4.0
     cfg.MODEL.MaskDINO.COST_DICE_WEIGHT = 5.0
     cfg.MODEL.MaskDINO.COST_MASK_WEIGHT = 5.0
-    cfg.MODEL.MaskDINO.COST_BOX_WEIGHT = 5.
-    cfg.MODEL.MaskDINO.COST_GIOU_WEIGHT = 2.
+    cfg.MODEL.MaskDINO.COST_BOX_WEIGHT = 5.0
+    cfg.MODEL.MaskDINO.COST_GIOU_WEIGHT = 2.0
 
     # transformer config
     cfg.MODEL.MaskDINO.NHEADS = 8
@@ -89,11 +102,11 @@ def add_maskdino_config(cfg):
 
     cfg.MODEL.MaskDINO.ENFORCE_INPUT_PROJ = False
     cfg.MODEL.MaskDINO.TWO_STAGE = True
-    cfg.MODEL.MaskDINO.INITIALIZE_BOX_TYPE = 'no'  # ['no', 'bitmask', 'mask2box']
-    cfg.MODEL.MaskDINO.DN="seg"
-    cfg.MODEL.MaskDINO.DN_NOISE_SCALE=0.4
-    cfg.MODEL.MaskDINO.DN_NUM=100
-    cfg.MODEL.MaskDINO.PRED_CONV=False
+    cfg.MODEL.MaskDINO.INITIALIZE_BOX_TYPE = "no"  # ['no', 'bitmask', 'mask2box']
+    cfg.MODEL.MaskDINO.DN = "seg"
+    cfg.MODEL.MaskDINO.DN_NOISE_SCALE = 0.4
+    cfg.MODEL.MaskDINO.DN_NUM = 100
+    cfg.MODEL.MaskDINO.PRED_CONV = False
 
     cfg.MODEL.MaskDINO.EVAL_FLAG = 1
 
@@ -119,13 +132,19 @@ def add_maskdino_config(cfg):
     cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = -1
 
     # MSDeformAttn encoder configs
-    cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_IN_FEATURES = ["res3", "res4", "res5"]
+    cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_IN_FEATURES = [
+        "res3",
+        "res4",
+        "res5",
+    ]
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_N_POINTS = 4
     cfg.MODEL.SEM_SEG_HEAD.DEFORMABLE_TRANSFORMER_ENCODER_N_HEADS = 8
     cfg.MODEL.SEM_SEG_HEAD.DIM_FEEDFORWARD = 1024
     cfg.MODEL.SEM_SEG_HEAD.NUM_FEATURE_LEVELS = 3
     cfg.MODEL.SEM_SEG_HEAD.TOTAL_NUM_FEATURE_LEVELS = 4
-    cfg.MODEL.SEM_SEG_HEAD.FEATURE_ORDER = 'high2low'  # ['low2high', 'high2low'] high2low: from high level to low level
+    cfg.MODEL.SEM_SEG_HEAD.FEATURE_ORDER = (
+        "high2low"  # ['low2high', 'high2low'] high2low: from high level to low level
+    )
 
     #####################
 
@@ -153,10 +172,18 @@ def add_maskdino_config(cfg):
     # These knobs are read only by that evaluator; the model's own inference-time score
     # gating stays OBJECT_MASK_THRESHOLD / TEST.DETECTIONS_PER_IMAGE.
     cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL = CN()
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED = False        # default off -> existing runs unchanged
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SCORE_THRESH = 0.5     # drop preds below this confidence
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.IOU_THRESH = 0.5       # min mask IoU for a match to be accepted
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.BOX_PREFILTER = True   # box-IoU prune before exact mask IoU
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED = (
+        False  # default off -> existing runs unchanged
+    )
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SCORE_THRESH = (
+        0.5  # drop preds below this confidence
+    )
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.IOU_THRESH = (
+        0.5  # min mask IoU for a match to be accepted
+    )
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.BOX_PREFILTER = (
+        True  # box-IoU prune before exact mask IoU
+    )
 
     cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.PERIOD = 0
     # GT visibility filtering is NOT a separate knob: the evaluator always reuses
@@ -168,7 +195,9 @@ def add_maskdino_config(cfg):
     # training batch, and written to EventStorage as a single "validation_loss"
     # scalar alongside "total_loss". Runs at TEST.EVAL_PERIOD cadence.
     cfg.MODEL.MaskDINO.TEST.VAL_LOSS = CN()
-    cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED = False   # default off -> existing runs unchanged
+    cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED = (
+        False  # default off -> existing runs unchanged
+    )
 
     # 1 = no subsampling (default; every existing config is unaffected). N>1 keeps
     cfg.DATASETS.TEST_SAMPLE_STRIDE = 1
@@ -203,6 +232,22 @@ def add_maskdino_config(cfg):
     cfg.INPUT.ROTATION_ANGLES = [0.0, 90.0, 180.0, 270.0]
     # if False, keep the image size and let the corners rotate out of frame
     cfg.INPUT.ROTATION_EXPAND = False
+    # Photometric augmentation, applied after the geometric block in
+    # build_transform_gen. These defaults reproduce exactly what used to be
+    # hardcoded there, so every pre-existing config is unaffected; they exist as
+    # config so an A/B arm can dial the appearance-randomization *dose*.
+    cfg.INPUT.PHOTOMETRIC = CN()
+    cfg.INPUT.PHOTOMETRIC.BRIGHTNESS = [0.7, 1.3]
+    cfg.INPUT.PHOTOMETRIC.CONTRAST = [0.7, 1.3]
+    cfg.INPUT.PHOTOMETRIC.SATURATION = [0.8, 1.2]
+    cfg.INPUT.PHOTOMETRIC.LIGHTING = 0.9  # T.RandomLighting scale (PCA lighting noise)
+    # The three axes below are new and OFF by default (prob 0 -> not even appended),
+    # so turning them on is always an explicit, per-arm decision.
+    cfg.INPUT.PHOTOMETRIC.BLUR_PROB = 0.0
+    cfg.INPUT.PHOTOMETRIC.BLUR_SIGMA = [0.0, 0.0]  # px, cv2.GaussianBlur sigma
+    cfg.INPUT.PHOTOMETRIC.NOISE_PROB = 0.0
+    cfg.INPUT.PHOTOMETRIC.NOISE_STD = [0.0, 0.0]  # uint8 units
+    cfg.INPUT.PHOTOMETRIC.GRAYSCALE_PROB = 0.0
 
     # Copy-paste compositing (reclassify phase only): pastes x amount other reclass_train
     # instances' instrument crops onto the destination image before build_transform_gen
@@ -213,17 +258,25 @@ def add_maskdino_config(cfg):
     cfg.INPUT.COPY_PASTE.ENABLED = False
     cfg.INPUT.COPY_PASTE.MIN_INSTANCES = 0
     cfg.INPUT.COPY_PASTE.MAX_INSTANCES = 10
-    cfg.INPUT.COPY_PASTE.ROTATION_DEGREES = 30.0   # theta ~ U(-this, +this); MBOI uses U(-90,90); raw images already in 36 deg sampled
+    cfg.INPUT.COPY_PASTE.ROTATION_DEGREES = 30.0  # theta ~ U(-this, +this); MBOI uses U(-90,90); raw images already in 36 deg sampled
     # Randomized per pasted instance, like BLEND_MODES - a plain string would silently
     # iterate its characters instead of being treated as one choice (tuple("nearest")),
     # so this must be a list even to pick "nearest" every time.
-    cfg.INPUT.COPY_PASTE.MASK_INTERP = ["linear", "bicubic","lanczos"]  # any of "nearest" | "linear" | "bicubic" | "lanczos"
+    cfg.INPUT.COPY_PASTE.MASK_INTERP = [
+        "linear",
+        "bicubic",
+        "lanczos",
+    ]  # any of "nearest" | "linear" | "bicubic" | "lanczos"
     # Blend mode randomized per pasted instance (Cut/Paste/Learn's "All Blend", best in
     # their ablation). "poisson" (gradient-domain/seamless cloning) is implemented
     # (CopyPasteCompositor._blend_poisson) but deliberately left out of this default
     # list - their ablation found it hurts on average - it's opt-in: add "poisson"
     # here for your own A/B experiments on possible color-shift robustness gains.
-    cfg.INPUT.COPY_PASTE.BLEND_MODES = ["none", "gaussian_blur_edge", "box_blur"] # "alpha_feather"
+    cfg.INPUT.COPY_PASTE.BLEND_MODES = [
+        "none",
+        "gaussian_blur_edge",
+        "box_blur",
+    ]  # "alpha_feather"
     cfg.INPUT.COPY_PASTE.BLUR_KERNEL_RANGE = [3, 7]
     cfg.INPUT.COPY_PASTE.FEATHER_WIDTH_RANGE = [2, 7]
     # gaussian_blur_edge/box_blur/alpha_feather all ramp symmetrically around the
@@ -241,6 +294,24 @@ def add_maskdino_config(cfg):
     cfg.INPUT.COPY_PASTE.CLUSTER_PROB = 0.0
     cfg.INPUT.COPY_PASTE.CLUSTER_RADIUS_FRACTION = 0.25
     cfg.INPUT.COPY_PASTE.CLUSTER_STRAY_FRACTION = 0.2
+
+    # Per-pasted-instance appearance jitter, applied in CopyPasteCompositor
+    # ._transform_instance after the rotation warp and before blending. All
+    # defaults are no-ops, so existing configs are unaffected.
+    cfg.INPUT.COPY_PASTE.INSTANCE_JITTER = CN()
+    cfg.INPUT.COPY_PASTE.INSTANCE_JITTER.BRIGHTNESS = [1.0, 1.0]
+    cfg.INPUT.COPY_PASTE.INSTANCE_JITTER.CONTRAST = [1.0, 1.0]
+    cfg.INPUT.COPY_PASTE.INSTANCE_JITTER.SATURATION = [1.0, 1.0]
+    cfg.INPUT.COPY_PASTE.INSTANCE_JITTER.HUE_DEGREES = 0.0  # theta ~ U(-this, +this)
+    cfg.INPUT.COPY_PASTE.INSTANCE_JITTER.BLUR_SIGMA = [0.0, 0.0]
+
+    # Per-pasted-instance PROJECTIVE deformation. Deliberately a separate node from
+    # INSTANCE_JITTER, which is contractually appearance-only (its tests assert the
+    # mask is untouched); this one changes geometry, and warps the crop, its mask and
+    # its valid-footprint together.
+    cfg.INPUT.COPY_PASTE.PERSPECTIVE = CN()
+    cfg.INPUT.COPY_PASTE.PERSPECTIVE.PROB = 0.0
+    cfg.INPUT.COPY_PASTE.PERSPECTIVE.TILT_DEGREES = 0.0
 
     # point loss configs
     # Number of points sampled during training for a mask point head.
@@ -271,4 +342,6 @@ def add_maskdino_config(cfg):
     cfg.MODEL.SWIN.OUT_FEATURES = ["res2", "res3", "res4", "res5"]
     cfg.MODEL.SWIN.USE_CHECKPOINT = False
 
-    cfg.Default_loading=True  # a bug in my d2. resume use this; if first time ResNet load, set it false
+    cfg.Default_loading = (
+        True  # a bug in my d2. resume use this; if first time ResNet load, set it false
+    )
