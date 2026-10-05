@@ -554,3 +554,258 @@ def test_returned_annotations_match_evaluator_gt_contract(compositor_factory):
         mask = mask_util.decode(ann["segmentation"])
         assert mask.shape == (64, 64)
         assert mask.dtype == np.uint8
+
+
+# --- per-instance appearance jitter (INPUT.COPY_PASTE.INSTANCE_JITTER) --------
+#
+# The contract is narrow and worth pinning: jitter changes PIXELS ONLY. If it ever
+# moved geometry, every returned annotation would disagree with what was painted,
+# and the modal-mask bookkeeping in _update_modal_annotation would be silently wrong.
+
+_LIVE_JITTER = {
+    "brightness": (0.7, 1.3),
+    "contrast": (0.8, 1.2),
+    "saturation": (0.8, 1.2),
+    "hue_degrees": 10.0,
+    "blur_sigma": (0.0, 1.5),
+}
+
+
+def test_normalize_jitter_treats_identity_config_as_off():
+    assert cp_mod._normalize_jitter(None) is None
+    assert cp_mod._normalize_jitter({}) is None
+    assert (
+        cp_mod._normalize_jitter(
+            {"brightness": (1.0, 1.0), "contrast": (1.0, 1.0),
+             "saturation": (1.0, 1.0), "hue_degrees": 0.0, "blur_sigma": (0.0, 0.0)}
+        )
+        is None
+    )
+
+
+def test_normalize_jitter_reads_uppercase_config_keys():
+    # yacs CfgNode is a dict subclass with UPPERCASE keys. Reading only lowercase
+    # would make every arm config silently train with jitter OFF.
+    from yacs.config import CfgNode as CN
+
+    cfg = CN()
+    cfg.BRIGHTNESS = [0.8, 1.2]
+    cfg.CONTRAST = [1.0, 1.0]
+    cfg.SATURATION = [1.0, 1.0]
+    cfg.HUE_DEGREES = 0.0
+    cfg.BLUR_SIGMA = [0.0, 0.0]
+    assert cp_mod._normalize_jitter(cfg)["brightness"] == (0.8, 1.2)
+
+
+def test_default_config_leaves_instance_jitter_off():
+    from detectron2.config import get_cfg
+
+    cfg = get_cfg()
+    add_maskdino_config(cfg)
+    assert cp_mod._normalize_jitter(cfg.INPUT.COPY_PASTE.INSTANCE_JITTER) is None
+
+
+def test_jitter_off_is_bit_identical(compositor_factory):
+    random.seed(7)
+    plain, _ = compositor_factory()
+    out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(7)
+    explicit_noop, _ = compositor_factory(
+        instance_jitter={"brightness": (1.0, 1.0), "blur_sigma": (0.0, 0.0)}
+    )
+    out_noop, anns_noop = explicit_noop(_solid_image(64, 0), [])
+
+    assert np.array_equal(out_plain, out_noop)
+    assert [a["segmentation"] for a in anns_plain] == [a["segmentation"] for a in anns_noop]
+
+
+def test_jitter_changes_pixels_but_not_geometry(compositor_factory):
+    random.seed(11)
+    plain, _ = compositor_factory()
+    out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(11)
+    jittered, _ = compositor_factory(instance_jitter=_LIVE_JITTER)
+    out_jit, anns_jit = jittered(_solid_image(64, 0), [])
+
+    # Same draws for placement/rotation (the jitter draws come last, after every
+    # geometric decision), so the masks must match exactly...
+    assert len(anns_plain) == len(anns_jit) == 1
+    for a, b in zip(anns_plain, anns_jit):
+        assert a["segmentation"] == b["segmentation"]
+        assert a["bbox"] == b["bbox"]
+        assert a["area"] == b["area"]
+        assert a["visibility_fraction"] == b["visibility_fraction"]
+    # ...while the painted pixels must not.
+    assert not np.array_equal(out_plain, out_jit)
+
+
+def test_jitter_only_repaints_inside_the_pasted_footprint(compositor_factory):
+    random.seed(3)
+    plain, _ = compositor_factory()
+    out_plain, anns = plain(_solid_image(64, 0), [])
+
+    random.seed(3)
+    jittered, _ = compositor_factory(instance_jitter=_LIVE_JITTER)
+    out_jit, _ = jittered(_solid_image(64, 0), [])
+
+    pasted = mask_util.decode(anns[0]["segmentation"]).astype(bool)
+    changed = np.any(out_plain != out_jit, axis=2)
+    # Blending softens a few pixels just outside the mask, so allow the difference
+    # to touch the dilated footprint - but never the far background.
+    allowed = cv2.dilate(pasted.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+    assert not np.any(changed & ~allowed)
+
+
+def test_jitter_produces_a_different_appearance_each_paste(compositor_factory):
+    # The whole point: one cached source crop must not look identical every time.
+    # Same global seed on both calls -> identical placement, so any pixel difference
+    # is the private jitter stream advancing, which is exactly what should vary.
+    jittered, _ = compositor_factory(instance_jitter=_LIVE_JITTER)
+    random.seed(21)
+    first, anns_first = jittered(_solid_image(64, 0), [])
+    random.seed(21)
+    second, anns_second = jittered(_solid_image(64, 0), [])
+    assert anns_first[0]["segmentation"] == anns_second[0]["segmentation"]
+    assert not np.array_equal(first, second)
+
+
+# --- per-instance projective warp (INPUT.COPY_PASTE.PERSPECTIVE) -------------
+#
+# Unlike INSTANCE_JITTER this one DOES change geometry, so the contract is the
+# opposite: the mask must move exactly with the pixels, and the returned annotation
+# must describe where the instrument actually landed.
+
+_LIVE_PERSPECTIVE = {"prob": 1.0, "tilt_degrees": 20.0}
+
+
+def test_normalize_perspective_off_unless_both_knobs_set():
+    assert cp_mod._normalize_perspective(None) is None
+    assert cp_mod._normalize_perspective({"prob": 0.0, "tilt_degrees": 15.0}) is None
+    assert cp_mod._normalize_perspective({"prob": 1.0, "tilt_degrees": 0.0}) is None
+    assert cp_mod._normalize_perspective({"prob": 0.5, "tilt_degrees": 15.0}) == (0.5, 15.0)
+
+
+def test_default_config_leaves_instance_perspective_off():
+    from detectron2.config import get_cfg
+
+    cfg = get_cfg()
+    add_maskdino_config(cfg)
+    assert cp_mod._normalize_perspective(cfg.INPUT.COPY_PASTE.PERSPECTIVE) is None
+
+
+def test_perspective_off_is_bit_identical(compositor_factory):
+    random.seed(17)
+    plain, _ = compositor_factory()
+    out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(17)
+    explicit_off, _ = compositor_factory(
+        instance_perspective={"prob": 0.0, "tilt_degrees": 15.0}
+    )
+    out_off, anns_off = explicit_off(_solid_image(64, 0), [])
+
+    assert np.array_equal(out_plain, out_off)
+    assert [a["segmentation"] for a in anns_plain] == [a["segmentation"] for a in anns_off]
+
+
+def test_perspective_changes_the_pasted_shape(compositor_factory):
+    random.seed(23)
+    plain, _ = compositor_factory()
+    _out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(23)
+    warped, _ = compositor_factory(instance_perspective=_LIVE_PERSPECTIVE)
+    _out_warp, anns_warp = warped(_solid_image(64, 0), [])
+
+    assert anns_plain[0]["segmentation"] != anns_warp[0]["segmentation"]
+
+
+def test_perspective_keeps_mask_on_the_pasted_pixels(compositor_factory):
+    # The decisive property. The sources are bright L-shapes on a black destination,
+    # so every pixel the compositor actually painted must be inside the returned
+    # mask - if the warp moved image and mask apart, painted pixels would fall
+    # outside it.
+    random.seed(29)
+    warped, _ = compositor_factory(
+        instance_perspective=_LIVE_PERSPECTIVE, blend_modes=("none",)
+    )
+    out, anns = warped(_solid_image(64, 0), [])
+
+    mask = mask_util.decode(anns[0]["segmentation"]).astype(bool)
+    painted = out.max(axis=2) > 0
+    assert painted.sum() > 0
+    stray = np.logical_and(painted, ~mask).sum()
+    assert stray == 0, f"{stray} painted pixels fell outside the instance mask"
+
+
+def test_perspective_is_area_neutral_on_average(compositor_factory):
+    # The frame-level INPUT.PERSPECTIVE has to sample its quad inward and so always
+    # zooms IN (~5% linear at 0.05). The per-instance version expands its canvas and
+    # rescales the tilted quad back to the source area, so it must not systematically
+    # grow or shrink instruments - apparent size is a class cue here.
+    areas_plain, areas_warped = [], []
+    for seed in range(40):
+        random.seed(seed)
+        plain, _ = compositor_factory()
+        _o, a = plain(_solid_image(64, 0), [])
+        areas_plain.append(a[0]["area"])
+
+        random.seed(seed)
+        warped, _ = compositor_factory(instance_perspective=_LIVE_PERSPECTIVE)
+        _o, a = warped(_solid_image(64, 0), [])
+        areas_warped.append(a[0]["area"])
+
+    ratio = np.mean(areas_warped) / np.mean(areas_plain)
+    assert 0.93 < ratio < 1.07, f"systematic area change {ratio:.3f}"
+
+
+def test_perspective_does_not_shift_placement_draws(compositor_factory):
+    # Perspective draws come from a private RNG, so enabling it must not consume
+    # global draws and move every subsequent paste - otherwise an arm testing
+    # perspective would also differ in pile layout.
+    random.seed(31)
+    plain, _ = compositor_factory(min_instances=3, max_instances=3)
+    _o, anns_plain = plain(_solid_image(96, 0), [])
+
+    random.seed(31)
+    warped, _ = compositor_factory(
+        min_instances=3, max_instances=3, instance_perspective=_LIVE_PERSPECTIVE
+    )
+    _o, anns_warp = warped(_solid_image(96, 0), [])
+
+    assert len(anns_plain) == len(anns_warp)
+    # Same instruments, in the same order, at roughly the same spots.
+    assert [a["category_id"] for a in anns_plain] == [a["category_id"] for a in anns_warp]
+
+
+def test_tilt_is_sampled_uniformly_in_angle():
+    # The point of parameterizing by angle: coverage must be flat across the range,
+    # not concentrated in the middle the way independent per-corner offsets are.
+    import random as _random
+
+    rng = _random.Random(0)
+    tilts = [rng.uniform(0.0, 18.0) for _ in range(6000)]
+    counts, _ = np.histogram(tilts, bins=6, range=(0.0, 18.0))
+    assert counts.min() / counts.max() > 0.85
+
+
+def test_tilt_homography_is_area_preserving():
+    # A real tilt foreshortens; the helper rescales it back, because apparent size
+    # is class-informative in this dataset.
+    corners = np.float32([[0, 0], [99, 0], [99, 99], [0, 99]])
+
+    def area(q):
+        x, y = q[:, 0], q[:, 1]
+        return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+    for tilt in (5.0, 15.0, 25.0):
+        h = cp_mod._tilt_homography(100, 100, tilt, 0.7)
+        pts = np.concatenate([corners, np.ones((4, 1), np.float32)], axis=1) @ h.T
+        assert area(pts[:, :2] / pts[:, 2:3]) == pytest.approx(area(corners), rel=0.02)
+
+
+def test_zero_tilt_is_the_identity():
+    h = cp_mod._tilt_homography(100, 80, 0.0, 1.3)
+    assert np.allclose(h / h[2, 2], np.eye(3), atol=1e-6)
