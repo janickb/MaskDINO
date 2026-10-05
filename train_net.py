@@ -28,7 +28,6 @@ from typing import Any
 
 import torch
 from detectron2.checkpoint import DetectionCheckpointer
-from detectron2.config import get_cfg
 from detectron2.data import (
     MetadataCatalog,
     build_detection_test_loader,
@@ -56,7 +55,7 @@ from detectron2.evaluation import (
     SemSegEvaluator,
     verify_results,
 )
-from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
+from detectron2.projects.deeplab import build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils import comm
 from detectron2.utils.logger import setup_logger
@@ -74,7 +73,8 @@ from maskdino import (
     PlateauLRScheduler,
     SemanticSegmentorWithTTA,
     ValidationLossHook,
-    add_maskdino_config,
+    arch_ns,
+    build_base_cfg,
     apply_test_sample_stride,
     apply_truncated_instance_filter,
     assert_train_test_class_mapping_consistent,
@@ -82,6 +82,40 @@ from maskdino import (
     set_num_classes_from_metadata,
     write_class_mapping_sidecar,
 )
+
+# Registers the "MaskFormer" meta-architecture plus MaskFormerHead /
+# MSDeformAttnPixelDecoder / MultiScaleMaskedTransformerDecoder, so a config with
+# META_ARCHITECTURE: "MaskFormer" resolves. Imported AFTER maskdino on purpose: the
+# shared D2SwinTransformer registration must come from maskdino/modeling/backbone/
+# swin.py, and a second registration of that key raises.
+import mask2former  # noqa: F401
+
+
+def insert_collective_hooks(ret, val_loss_hook):
+    """Insert ValidationLossHook at a position that is the SAME on every rank.
+
+    Both ValidationLossHook and PlateauLRHook run a comm.all_gather in after_step, so
+    their relative order has to be identical across the DDP group - if rank 0 enters one
+    collective while rank 1 enters the other, the ranks mismatch and the job hangs until
+    the gloo timeout (30 min) and then dies.
+
+    The previous anchor was hooks.PeriodicWriter, which detectron2 adds ONLY on the main
+    process (DefaultTrainer.build_hooks). So rank 0 ended up with
+        [..., EvalHook, EvalHook, ValidationLossHook, PeriodicWriter, PlateauLRHook]
+    while every other rank got
+        [..., EvalHook, EvalHook, PlateauLRHook, ValidationLossHook]
+    - the two collective hooks in OPPOSITE order. They first fire on the same iteration
+    at lcm(TEST.EVAL_PERIOD, SOLVER.PLATEAU.CHECK_PERIOD); with the surgical configs'
+    1000 and 300 that is iteration 3000, which is exactly where multi-GPU runs died.
+
+    hooks.EvalHook is added unconditionally on every rank, so it is a safe anchor; the
+    caller appends PlateauLRHook afterwards, keeping it last everywhere.
+    """
+    last_eval = max(
+        (i for i, h in enumerate(ret) if isinstance(h, hooks.EvalHook)), default=-1
+    )
+    ret.insert(last_eval + 1 if last_eval >= 0 else len(ret), val_loss_hook)
+    return ret
 
 
 class Trainer(DefaultTrainer):
@@ -152,7 +186,7 @@ class Trainer(DefaultTrainer):
 
         `include_coco`/`include_hungarian` let build_hooks() split the "coco" evaluator
         type's two evaluators (COCOEvaluator + the optional HungarianInstanceEvaluator)
-        across two separately-scheduled EvalHooks when MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
+        across two separately-scheduled EvalHooks when MODEL.<ARCH>.TEST.HUNGARIAN_EVAL
         .PERIOD decouples the confusion-matrix cadence from TEST.EVAL_PERIOD - see
         build_hooks(). Both default True so every other call site (--eval-only,
         test_with_TTA) is unaffected.
@@ -164,6 +198,10 @@ class Trainer(DefaultTrainer):
                 output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
         evaluator_list = []
         evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
+        # The shared TEST.* custom keys live under each architecture's own namespace
+        # (MODEL.MaskDINO / MODEL.MASK_FORMER) so archived run configs keep merging -
+        # see maskdino.config.arch_ns.
+        ns = arch_ns(cfg)
         # semantic segmentation
         if evaluator_type in ["sem_seg", "ade20k_panoptic_seg"]:
             evaluator_list.append(
@@ -193,7 +231,7 @@ class Trainer(DefaultTrainer):
                         dataset_name, output_dir=output_folder, allow_cached_coco=False
                     )
                 )
-            if include_hungarian and cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED:
+            if include_hungarian and ns.TEST.HUNGARIAN_EVAL.ENABLED:
                 from maskdino.evaluation.hungarian_instance_evaluation import (
                     HungarianInstanceEvaluator,
                 )
@@ -211,19 +249,19 @@ class Trainer(DefaultTrainer):
             "cityscapes_panoptic_seg",
             "mapillary_vistas_panoptic_seg",
         ]:
-            if cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON:
+            if ns.TEST.PANOPTIC_ON:
                 evaluator_list.append(
                     COCOPanopticEvaluator(dataset_name, output_folder)
                 )
         # COCO
         if (
             evaluator_type == "coco_panoptic_seg"
-            and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON
+            and ns.TEST.INSTANCE_ON
         ):
             evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
         if (
             evaluator_type == "coco_panoptic_seg"
-            and cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON
+            and ns.TEST.SEMANTIC_ON
         ):
             evaluator_list.append(
                 SemSegEvaluator(
@@ -233,14 +271,14 @@ class Trainer(DefaultTrainer):
         # Mapillary Vistas
         if (
             evaluator_type == "mapillary_vistas_panoptic_seg"
-            and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON
+            and ns.TEST.INSTANCE_ON
         ):
             evaluator_list.append(
                 InstanceSegEvaluator(dataset_name, output_dir=output_folder)
             )
         if (
             evaluator_type == "mapillary_vistas_panoptic_seg"
-            and cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON
+            and ns.TEST.SEMANTIC_ON
         ):
             evaluator_list.append(
                 SemSegEvaluator(
@@ -259,12 +297,12 @@ class Trainer(DefaultTrainer):
             )
             return CityscapesSemSegEvaluator(dataset_name)
         if evaluator_type == "cityscapes_panoptic_seg":
-            if cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON:
+            if ns.TEST.SEMANTIC_ON:
                 assert torch.cuda.device_count() > comm.get_rank(), (
                     "CityscapesEvaluator currently do not work with multiple machines."
                 )
                 evaluator_list.append(CityscapesSemSegEvaluator(dataset_name))
-            if cfg.MODEL.MaskDINO.TEST.INSTANCE_ON:
+            if ns.TEST.INSTANCE_ON:
                 assert torch.cuda.device_count() > comm.get_rank(), (
                     "CityscapesEvaluator currently do not work with multiple machines."
                 )
@@ -272,7 +310,7 @@ class Trainer(DefaultTrainer):
         # ADE20K
         if (
             evaluator_type == "ade20k_panoptic_seg"
-            and cfg.MODEL.MaskDINO.TEST.INSTANCE_ON
+            and ns.TEST.INSTANCE_ON
         ):
             evaluator_list.append(
                 InstanceSegEvaluator(dataset_name, output_dir=output_folder)
@@ -408,7 +446,7 @@ class Trainer(DefaultTrainer):
         hooks.LRScheduler, already in the list from super()) is a no-op by design.
 
         Also splits the single stock EvalHook in two when
-        MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.PERIOD requests a cadence different from
+        MODEL.<ARCH>.TEST.HUNGARIAN_EVAL.PERIOD requests a cadence different from
         TEST.EVAL_PERIOD: HungarianInstanceEvaluator roughly doubles per-image eval cost
         (GT mask decode + mask-IoU matrix + Hungarian match, all serial CPU) on top of
         COCOEvaluator's own RLE encoding, but only feeds a diagnostic confusion matrix -
@@ -416,22 +454,14 @@ class Trainer(DefaultTrainer):
         doesn't need to run as often. See build_evaluator()'s include_coco/
         include_hungarian params.
 
-        Also adds ValidationLossHook when MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED -
+        Also adds ValidationLossHook when MODEL.<ARCH>.TEST.VAL_LOSS.ENABLED -
         logs "validation_loss" (+ "val_<component>") to EventStorage at
         TEST.EVAL_PERIOD cadence, using the exact same loss function training
         does, just evaluated on DATASETS.TEST[0] - see maskdino/solver/val_loss.py.
         """
         ret = super().build_hooks()
-        if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
-            ret.append(
-                PlateauLRHook(
-                    self.scheduler,
-                    self.cfg.SOLVER.PLATEAU.METRIC,
-                    self.cfg.SOLVER.PLATEAU.CHECK_PERIOD,
-                )
-            )
 
-        he = self.cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
+        he = arch_ns(self.cfg).TEST.HUNGARIAN_EVAL
         if he.ENABLED and he.PERIOD > 0 and he.PERIOD != self.cfg.TEST.EVAL_PERIOD:
 
             def cheap_test_and_save_results():
@@ -460,13 +490,21 @@ class Trainer(DefaultTrainer):
                 hooks.EvalHook(he.PERIOD, hungarian_test_and_save_results),
             ]
 
-        if self.cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED:
+        if arch_ns(self.cfg).TEST.VAL_LOSS.ENABLED:
             val_loader = self.build_val_loss_loader(self.cfg, self.cfg.DATASETS.TEST[0])
-            idx = next(
-                (i for i, h in enumerate(ret) if isinstance(h, hooks.PeriodicWriter)),
-                len(ret),
+            ret = insert_collective_hooks(
+                ret, ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader)
             )
-            ret.insert(idx, ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader))
+
+        # PlateauLRHook LAST, on every rank - see insert_collective_hooks().
+        if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
+            ret.append(
+                PlateauLRHook(
+                    self.scheduler,
+                    self.cfg.SOLVER.PLATEAU.METRIC,
+                    self.cfg.SOLVER.PLATEAU.CHECK_PERIOD,
+                )
+            )
 
         return ret
 
@@ -481,7 +519,7 @@ class Trainer(DefaultTrainer):
 
         # reclassify-finetune with the encoder unfrozen: the linear class head
         # keeps BASE_LR, the (pretrained) encoder trains gentler.
-        rf = cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE
+        rf = arch_ns(cfg).RECLASSIFY_FINETUNE
         encoder_lr_mult = (
             rf.ENCODER_LR_MULTIPLIER
             if rf.ENABLED and rf.UNFREEZE_ENCODER
@@ -588,10 +626,10 @@ def setup(args):
     """
     Create configs and perform basic setups.
     """
-    cfg = get_cfg()
-    # for poly lr schedule
-    add_deeplab_config(cfg)
-    add_maskdino_config(cfg)
+    # build_base_cfg() adds deeplab (for the poly LR schedule) + both architectures'
+    # namespaces. Must be the same factory as the __main__ block below, or a fresh
+    # Mask2Former run dies there on an unknown MODEL.MASK_FORMER key before launch().
+    cfg = build_base_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     # Fail fast if train/test still disagree on the class id space (wrong dataset
@@ -656,9 +694,7 @@ if __name__ == "__main__":
         # OUTPUT_DIR - computing it independently per-rank inside setup() could let two
         # ranks land on different seconds and disagree. --resume/--eval-only skip this:
         # they target an existing run's folder as configured, not a new one.
-        _cfg = get_cfg()
-        add_deeplab_config(_cfg)
-        add_maskdino_config(_cfg)
+        _cfg = build_base_cfg()
         _cfg.merge_from_file(args.config_file)
         _cfg.merge_from_list(args.opts)
         _run_dir = _cfg.OUTPUT_DIR.rstrip("/")

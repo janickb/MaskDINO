@@ -1,0 +1,16 @@
+_BASE_: maskformer2_R50_surgical_tools_reclassify.yaml
+# Also train the transformer decoder, not just the linear class head. Twin of
+# maskdino_R50_surgical_tools_reclassify_unfreeze_decoder.yaml.
+#
+# NOT a like-for-like parameter set with the MaskDINO twin: this unfreezes
+# MultiScaleMaskedTransformerDecoder's three parallel layer stacks + decoder_norm +
+# mask_embed, while MaskDINO's prefix additionally sweeps in its DINO decoder's
+# reference-point/query refinement and bbox_embed, neither of which exists here. The
+# `[reclassify-finetune]` log line prints both the tensor count and the parameter
+# total - compare the PARAMETER totals across arms, and quote them when reporting an
+# adaptation-capacity result.
+MODEL:
+  MASK_FORMER:
+    RECLASSIFY_FINETUNE:
+      UNFREEZE_DECODER: True
+OUTPUT_DIR: "runs/reclassify_m2f_unfreeze_decoder_v1"

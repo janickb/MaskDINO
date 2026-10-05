@@ -1,0 +1,39 @@
+_BASE_: maskformer2_R50_bs16_50ep.yaml
+# Mask2Former twin of Base-Surgical-HDF5.yaml - the shared base for every surgical-tools
+# run on the scene_generator HDF5 datasets, for the Mask2Former arm.
+#
+# Holds ONLY what is a property of this data/eval setup rather than of a single
+# experiment: the mapper, the render resolution (train and test), the periodic-eval
+# subsample, the query count, and the Hungarian evaluator. Experiment knobs - WEIGHTS,
+# NUM_CLASSES, DATASETS, the SOLVER block, scale jitter, MIN_VISIBILITY, FREEZE_AT,
+# NMS_IOU, HUNGARIAN_EVAL.PERIOD - stay in the leaf configs.
+#
+# Keep this file key-for-key identical to Base-Surgical-HDF5.yaml apart from the
+# MODEL.MASK_FORMER vs MODEL.MaskDINO namespace. That symmetry is what makes the
+# architecture comparison a controlled one; tests/test_mask2former_harness_parity.py
+# pins it by diffing the two arms' fully-resolved configs.
+MODEL:
+  MASK_FORMER:
+    # 100 is also upstream Mask2Former's own COCO value, so unlike the MaskDINO arm
+    # (which drops the pretrained checkpoint's 300-query rows on load) this arm's
+    # query embeddings transfer intact. That asymmetry favours this arm - see the
+    # comparison caveats in the phase-1 leaf.
+    NUM_OBJECT_QUERIES: 100
+    TEST:
+      HUNGARIAN_EVAL:
+        # Single-operating-point localization diagnostic + confusion matrix; writes
+        # inference/instance_matching_*.{csv,png}. Set PERIOD per config - it roughly
+        # doubles per-image eval cost, so it usually wants a multiple of EVAL_PERIOD.
+        ENABLED: True
+DATASETS:
+  # Periodic eval on every 4th val image; override to 1 for a full-set pass.
+  TEST_SAMPLE_STRIDE: 4
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  # The renders are 1024x1024. IMAGE_SIZE drives the train-time
+  # ResizeScale/FixedSizeCrop; MIN_SIZE_TEST/MAX_SIZE_TEST drive the test mapper's
+  # ResizeShortestEdge (hdf5_coco_instance_dataset_mapper.py). All three must agree,
+  # or eval silently runs at a different resolution than training.
+  IMAGE_SIZE: 1024
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024

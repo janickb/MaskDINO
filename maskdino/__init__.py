@@ -8,7 +8,12 @@ from . import data  # register all new datasets
 from . import modeling
 
 # config
-from .config import add_maskdino_config
+from .config import (
+    add_maskdino_config,
+    add_surgical_arch_config,
+    arch_ns,
+    build_base_cfg,
+)
 
 # compact ("effective") class label space + embedded checkpoint mapping
 from .data.class_mapping import (

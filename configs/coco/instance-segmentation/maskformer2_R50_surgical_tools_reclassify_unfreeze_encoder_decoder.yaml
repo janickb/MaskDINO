@@ -1,0 +1,12 @@
+_BASE_: maskformer2_R50_surgical_tools_reclassify.yaml
+# Also train the MSDeformAttn pixel encoder on top of the decoder, at a reduced LR.
+# Twin of maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml.
+# sem_seg_head.pixel_decoder is the module path in both architectures, so
+# train_net.build_optimizer's ENCODER_LR_MULTIPLIER param group needs no change.
+MODEL:
+  MASK_FORMER:
+    RECLASSIFY_FINETUNE:
+      UNFREEZE_DECODER: True
+      UNFREEZE_ENCODER: True
+      ENCODER_LR_MULTIPLIER: 0.1
+OUTPUT_DIR: "runs/reclassify_m2f_unfreeze_encoder_decoder_v1"

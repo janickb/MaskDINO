@@ -20,10 +20,9 @@ import tqdm
 
 from detectron2.config import get_cfg
 from detectron2.data.detection_utils import read_image
-from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.utils.logger import setup_logger
 
-from maskdino import add_maskdino_config
+from maskdino import build_base_cfg
 from predictor import VisualizationDemo
 
 
@@ -33,9 +32,7 @@ WINDOW_NAME = "mask2former demo"
 
 def setup_cfg(args):
     # load config from file and command-line arguments
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskdino_config(cfg)
+    cfg = build_base_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()

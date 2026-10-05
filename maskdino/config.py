@@ -97,23 +97,6 @@ def add_maskdino_config(cfg):
 
     cfg.MODEL.MaskDINO.EVAL_FLAG = 1
 
-    # Reclassification-phase fine-tuning (few-shot retrain on a frozen backbone)
-    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE = CN()
-    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENABLED = False
-    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.TRAINABLE_PARAM_PREFIXES = [
-        "sem_seg_head.predictor.class_embed"
-    ]
-    # Also unfreeze the transformer decoder (DINO decoder layers + the mask/box
-    # prediction heads it drives), leaving the backbone and the MSDeformAttn pixel
-    # encoder frozen. Lets the query features adapt to a few-shot set instead of
-    # only the linear class head. When True, the loss set is NOT forced to
-    # labels-only - mask/box losses + deep supervision come back so the decoder
-    # is anchored on segmentation quality.
-    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_DECODER = False
-    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER = False
-    # Encoder params train at BASE_LR * this factor; only applied when
-    # UNFREEZE_ENCODER is True.
-    cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENCODER_LR_MULTIPLIER = 0.1
 
     # -1 = "derive from the dataset": for datasets registered with a compact class
     # mapping (the surgical HDF5 loaders), train_net.setup() fills this in from the
@@ -145,33 +128,7 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.TEST.PANO_TEMPERATURE = 0.06
     # cfg.MODEL.MaskDINO.TEST.EVAL_FLAG = 1
 
-    # Per-class mask-IoU NMS in instance_inference(): among predictions sharing the
-    # SAME predicted label, greedily drop the lower-scoring one whenever mask IoU
-    # exceeds this. Predictions with different labels are never compared, so two
-    # genuinely distinct overlapping instruments are unaffected. 0 disables (default,
-    # matches upstream - no NMS).
-    cfg.MODEL.MaskDINO.TEST.NMS_IOU = 0.0
-
-    # Hungarian mask-IoU instance evaluator (maskdino/evaluation/hungarian_instance_evaluation.py).
-    # These knobs are read only by that evaluator; the model's own inference-time score
-    # gating stays OBJECT_MASK_THRESHOLD / TEST.DETECTIONS_PER_IMAGE.
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL = CN()
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.ENABLED = False        # default off -> existing runs unchanged
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SCORE_THRESH = 0.5     # drop preds below this confidence
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.IOU_THRESH = 0.5       # min mask IoU for a match to be accepted
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.BOX_PREFILTER = True   # box-IoU prune before exact mask IoU
-
-    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.PERIOD = 0
-    # GT visibility filtering is NOT a separate knob: the evaluator always reuses
-    # INPUT.MIN_VISIBILITY so "recall" is measured against the same GT the model trained on.
-
-    # Validation loss (maskdino/solver/val_loss.py): the same loss function
-    # training uses (self.criterion under MaskDINO.forward's self.training
-    # branch), just averaged over DATASETS.TEST[0] instead of the current
-    # training batch, and written to EventStorage as "validation_loss" /
-    # "val_<component>" alongside "total_loss". Runs at TEST.EVAL_PERIOD cadence.
-    cfg.MODEL.MaskDINO.TEST.VAL_LOSS = CN()
-    cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED = False   # default off -> existing runs unchanged
+    add_surgical_arch_config(cfg.MODEL.MaskDINO)
 
     # 1 = no subsampling (default; every existing config is unaffected). N>1 keeps
     cfg.DATASETS.TEST_SAMPLE_STRIDE = 1
@@ -267,3 +224,124 @@ def add_maskdino_config(cfg):
     cfg.MODEL.SWIN.USE_CHECKPOINT = False
 
     cfg.Default_loading=True  # a bug in my d2. resume use this; if first time ResNet load, set it false
+
+
+# MODEL.META_ARCHITECTURE -> the MODEL.<X> sub-node holding that architecture's own
+# knobs. Both supported architectures carry the identical set of *fork-specific* keys
+# (injected by add_surgical_arch_config below), so every shared consumer - train_net.py,
+# HungarianInstanceEvaluator, tools/rerun_hungarian_from_cache.py - reads them through
+# arch_ns(cfg) rather than hardcoding one namespace.
+#
+# The keys are deliberately NOT migrated to a model-agnostic path such as cfg.TEST.*:
+# every archived runs/*/config.yaml is the --eval-only entry point for a finished
+# experiment, and CfgNode.merge_from_file raises "Non-existent config key" for any key
+# in the file that the cfg no longer defines. Renaming them would break all of them.
+_ARCH_CONFIG_NS = {
+    "MaskDINO": "MaskDINO",
+    "MaskFormer": "MASK_FORMER",
+}
+
+
+def arch_ns(cfg):
+    """Return cfg.MODEL.<arch namespace> for cfg.MODEL.META_ARCHITECTURE."""
+    try:
+        key = _ARCH_CONFIG_NS[cfg.MODEL.META_ARCHITECTURE]
+    except KeyError:
+        # Must raise, never fall back: a typo'd or missing META_ARCHITECTURE that
+        # silently resolved to MaskDINO would read HUNGARIAN_EVAL.ENABLED=False and
+        # VAL_LOSS.ENABLED=False, producing a whole run with no confusion matrix and
+        # no validation loss, with nothing in the log to say why.
+        raise KeyError(
+            f"MODEL.META_ARCHITECTURE={cfg.MODEL.META_ARCHITECTURE!r} has no registered "
+            f"config namespace; known: {sorted(_ARCH_CONFIG_NS)}"
+        ) from None
+    return getattr(cfg.MODEL, key)
+
+
+def add_surgical_arch_config(arch_cfg):
+    """Inject this fork's architecture-namespaced custom keys into a MODEL.<ARCH> node.
+
+    Called once per supported meta-architecture (MaskDINO here, MaskFormer from
+    mask2former/config.py) so arch_ns(cfg) always resolves to a node carrying the same
+    keys with the same defaults - that is what lets one train_net.py and one
+    HungarianInstanceEvaluator drive both architectures. `arch_cfg.TEST` must already
+    exist. Every default is off / upstream-equivalent, so granting a second
+    architecture this namespace changes no existing behaviour.
+    """
+    # Per-class mask-IoU NMS in instance_inference(): among predictions sharing the
+    # SAME predicted label, greedily drop the lower-scoring one whenever mask IoU
+    # exceeds this. Predictions with different labels are never compared, so two
+    # genuinely distinct overlapping instruments are unaffected. 0 disables (default,
+    # matches upstream - no NMS).
+    arch_cfg.TEST.NMS_IOU = 0.0
+
+    # Hungarian mask-IoU instance evaluator (maskdino/evaluation/hungarian_instance_evaluation.py).
+    # These knobs are read only by that evaluator; the model's own inference-time score
+    # gating stays OBJECT_MASK_THRESHOLD / TEST.DETECTIONS_PER_IMAGE.
+    arch_cfg.TEST.HUNGARIAN_EVAL = CN()
+    arch_cfg.TEST.HUNGARIAN_EVAL.ENABLED = False        # default off -> existing runs unchanged
+    arch_cfg.TEST.HUNGARIAN_EVAL.SCORE_THRESH = 0.5     # drop preds below this confidence
+    arch_cfg.TEST.HUNGARIAN_EVAL.IOU_THRESH = 0.5       # min mask IoU for a match to be accepted
+    arch_cfg.TEST.HUNGARIAN_EVAL.BOX_PREFILTER = True   # box-IoU prune before exact mask IoU
+
+    arch_cfg.TEST.HUNGARIAN_EVAL.PERIOD = 0
+    # GT visibility filtering is NOT a separate knob: the evaluator always reuses
+    # INPUT.MIN_VISIBILITY so "recall" is measured against the same GT the model trained on.
+
+    # Validation loss (maskdino/solver/val_loss.py): the same loss function
+    # training uses (self.criterion under MaskDINO.forward's self.training
+    # branch), just averaged over DATASETS.TEST[0] instead of the current
+    # training batch, and written to EventStorage as "validation_loss" /
+    # "val_<component>" alongside "total_loss". Runs at TEST.EVAL_PERIOD cadence.
+    arch_cfg.TEST.VAL_LOSS = CN()
+    arch_cfg.TEST.VAL_LOSS.ENABLED = False   # default off -> existing runs unchanged
+
+    # Reclassification-phase fine-tuning (few-shot retrain on a frozen backbone)
+    arch_cfg.RECLASSIFY_FINETUNE = CN()
+    arch_cfg.RECLASSIFY_FINETUNE.ENABLED = False
+    # The linear class head sits at this same module path in both architectures.
+    arch_cfg.RECLASSIFY_FINETUNE.TRAINABLE_PARAM_PREFIXES = [
+        "sem_seg_head.predictor.class_embed"
+    ]
+    # Also unfreeze the transformer decoder (its layer stack + the prediction heads it
+    # drives), leaving the backbone and the MSDeformAttn pixel encoder frozen. Lets the
+    # query features adapt to a few-shot set instead of only the linear class head.
+    # When True, the loss set is NOT forced to labels-only - mask (and, for MaskDINO,
+    # box) losses plus deep supervision come back so the decoder stays anchored on
+    # segmentation quality.
+    #
+    # Which parameters this actually covers is architecture-specific and NOT
+    # comparable between the two: MaskDINO's prefix sweeps in the DINO decoder's
+    # reference-point/query refinement and its bbox_embed, neither of which
+    # Mask2Former has. Each meta-arch extends the prefix tuple itself; see
+    # maskdino/maskdino.py and mask2former/maskformer_model.py.
+    arch_cfg.RECLASSIFY_FINETUNE.UNFREEZE_DECODER = False
+    arch_cfg.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER = False
+    # Encoder params train at BASE_LR * this factor; only applied when
+    # UNFREEZE_ENCODER is True.
+    arch_cfg.RECLASSIFY_FINETUNE.ENCODER_LR_MULTIPLIER = 0.1
+
+
+def build_base_cfg():
+    """get_cfg() + every add_*_config this fork needs, in the one correct order.
+
+    Single source of truth so train_net.setup(), train_net's __main__
+    run-folder-timestamping block and the tools/ + demo/ scripts cannot drift apart. A
+    call site that forgets add_mask2former_config fails with a cryptic
+    "Non-existent config key: MODEL.MASK_FORMER..." at merge_from_file time - and for
+    the __main__ block that happens only on *fresh* training runs, while --eval-only
+    and --resume keep working.
+
+    mask2former is imported lazily: mask2former/config.py imports this module, so a
+    top-level import here would be circular.
+    """
+    from detectron2.config import get_cfg
+    from detectron2.projects.deeplab import add_deeplab_config
+
+    from mask2former import add_mask2former_config
+
+    cfg = get_cfg()
+    add_deeplab_config(cfg)
+    add_maskdino_config(cfg)
+    add_mask2former_config(cfg)
+    return cfg

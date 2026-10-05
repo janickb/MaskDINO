@@ -73,16 +73,13 @@ def main():
 
     from detectron2.config import get_cfg
     from detectron2.data import DatasetCatalog, MetadataCatalog
-    from detectron2.projects.deeplab import add_deeplab_config
-
-    from maskdino.config import add_maskdino_config
+    
+    from maskdino.config import build_base_cfg
     from maskdino.data.dataset_mappers.hdf5_coco_instance_dataset_mapper import (
         Hdf5CocoInstanceDatasetMapper,
     )
 
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskdino_config(cfg)
+    cfg = build_base_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.INPUT.COPY_PASTE.ENABLED = True
     cfg.INPUT.COPY_PASTE.BLEND_MODES = ["gaussian_blur_edge"] #["none", "gaussian_blur_edge", "box_blur", "alpha_feather"]

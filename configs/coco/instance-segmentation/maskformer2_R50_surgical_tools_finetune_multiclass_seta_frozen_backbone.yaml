@@ -1,0 +1,80 @@
+_BASE_: Base-Surgical-HDF5-M2F.yaml
+# Phase-1 twin of maskdino_R50_surgical_tools_finetune_multiclass_seta_frozen_backbone
+# .yaml: multiclass finetune on train_seta_mm from a COCO-pretrained R50, frozen
+# backbone, adaptive plateau LR.
+#
+# Every DATASETS / INPUT / SOLVER / TEST / DATALOADER value below is copied from that
+# file verbatim. Do not change one without the other - verify with the resolved-config
+# diff (tests/test_mask2former_harness_parity.py, or the README's step-3 command).
+#
+# KNOWN CONFOUNDS for the MaskDINO-vs-Mask2Former comparison this config exists to run:
+#  * Pretrained-weight transfer is asymmetric and favours THIS arm. The MaskDINO COCO
+#    checkpoint is 300-query / hidden-1024, so its query embeddings and class head are
+#    dropped loading into a 100-query model; Mask2Former's is already 100-query /
+#    hidden-256 and loads intact. Diff both arms'
+#    `grep "Skip loading\|shape mismatch" runs/*/log.txt` and report loaded-parameter
+#    counts alongside any AP delta.
+#  * BASE_LR 0.0003 is the MaskDINO arm's value, not Mask2Former's published 1e-4. The
+#    harness is the controlled variable here, so it stays - but run this arm once at
+#    1e-4 before publishing any directional conclusion.
+#  * Loss recipes differ as published (CLASS 2.0 here vs 4.0, no box/giou/denoising
+#    terms). Deliberately NOT equalized: that would handicap whichever architecture was
+#    tuned at its own weights. Frame the result as "published recipes on identical data,
+#    augmentation and evaluation", not an isolated architectural ablation.
+#  * bbox AP from this arm is mask-derived (Mask2Former has no box branch) and is a
+#    re-parameterization of its own segm AP. segm AP is the comparable metric.
+MODEL:
+  WEIGHTS: "models/maskformer2_R50_bs16_50ep_coco_instance_mask43.7ap_boundary30.6ap.pkl"
+  SEM_SEG_HEAD:
+    # -1: derive the class-head width from the dataset. train_net.setup() sets it
+    # from the registered dataset's effective class count.
+    NUM_CLASSES: -1
+  MASK_FORMER:
+    NUM_OBJECT_QUERIES: 100
+    TEST:
+      # Ported from MaskDINO (mask2former/maskformer_model.py's instance_inference).
+      # Upstream Mask2Former ships NO dedup step; 0.5 matches the MaskDINO arm. Both
+      # arms must use the same value or their precision is not comparable.
+      NMS_IOU: 0.5
+      HUNGARIAN_EVAL:
+        ENABLED: True
+        PERIOD: 4000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
+  BACKBONE:
+    FREEZE_AT: 5
+DATASETS:
+  TRAIN: ("train_seta_mm",)
+  TEST: ("val_seta_mm",)
+  TEST_SAMPLE_STRIDE: 4               # periodic eval on every 4th val_seta image; override to 1 for a full-set pass
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  IMAGE_SIZE: 1024
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  MIN_VISIBILITY: 0.0
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0003
+  LR_SCHEDULER_NAME: "ReduceLROnPlateau"   # adaptive, metric-driven decay - not a fixed schedule
+  MAX_ITER: 20000
+  CHECKPOINT_PERIOD: 5000
+  WARMUP_ITERS: 250
+  WARMUP_FACTOR: 0.001
+  PLATEAU:
+    # NOTE: "total_loss" is not comparable ACROSS the two arms (different loss terms
+    # and weights), so the two runs get differently-shaped LR schedules - itself a
+    # confound. To schedule both arms on the same signal instead, set
+    # METRIC: "instance_matching/classagnostic_f1" with MODE: "max" in BOTH configs.
+    METRIC: "total_loss"
+    MODE: "min"
+    FACTOR: 0.5             # halve LR on each plateau, rather than PyTorch's default 10x cut
+    PATIENCE: 3              # checks (not iters) with no improvement before cutting
+    CHECK_PERIOD: 300        # iters between checks
+    MIN_LR: 0.000002
+    THRESHOLD: 1e-2
+TEST:
+  EVAL_PERIOD: 1000
+OUTPUT_DIR: "runs/phase1_training_seta_m2f_v1-0"
+DATALOADER:
+  NUM_WORKERS: 4

@@ -29,9 +29,8 @@ from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
 from detectron2.data import transforms as T
 from detectron2.modeling import build_model
-from detectron2.projects.deeplab import add_deeplab_config
 
-from maskdino import add_maskdino_config
+from maskdino import build_base_cfg
 from sgdata.reader import read_image as read_hdf5_image
 
 HDF5_EXTS = (".hdf5", ".h5")
@@ -58,9 +57,7 @@ def get_parser():
 def main():
     args = get_parser().parse_args()
 
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskdino_config(cfg)
+    cfg = build_base_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()

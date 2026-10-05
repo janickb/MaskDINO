@@ -439,3 +439,84 @@ def test_artifacts_png_written(tmp_path):
     ev.evaluate()
     png = tmp_path / "instance_matching_confusion.png"
     assert png.exists() and png.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# Mask2Former arm: the evaluator must be box-agnostic.
+#
+# Mask2Former has no box branch, so its Instances carry pred_boxes only because this
+# fork derives them from the masks (for COCOEvaluator's bbox task and for
+# DropTruncatedPredictions). This evaluator must not care either way: mask_iou_matrix
+# derives its own box-prefilter boxes from the masks. These tests pin that, so the
+# Hungarian numbers are genuinely comparable across the two architectures.
+# ---------------------------------------------------------------------------
+
+
+def _square(y0, x0, size=20):
+    m = torch.zeros(H, W, dtype=torch.bool)
+    m[y0 : y0 + size, x0 : x0 + size] = True
+    return m
+
+
+@pytest.mark.parametrize("box_prefilter", [True, False])
+def test_metrics_identical_with_and_without_pred_boxes(box_prefilter):
+    from detectron2.structures import BitMasks
+
+    gt = [(_square(10, 10), 0), (_square(60, 60), 1)]
+    pred_masks = [_square(11, 11), _square(60, 60), _square(5, 90, size=8)]
+    pred = (pred_masks, [0.9, 0.8, 0.7], [0, 1, 2])
+
+    # Without pred_boxes - the shape make_instances() already produces.
+    ev_a = make_evaluator(num_classes=6, box_prefilter=box_prefilter)
+    rec_a = run_one(ev_a, 1, gt, pred)
+
+    # With mask-derived pred_boxes attached, exactly as the patched
+    # Mask2Former instance_inference ships them.
+    ev_b = make_evaluator(num_classes=6, box_prefilter=box_prefilter)
+    ev_b._gt_by_image_id[1] = [rle_ann(m, c) for m, c in gt]
+    ev_b._hw_by_image_id[1] = (H, W)
+    ev_b.reset()
+    inst = make_instances(*pred)
+    inst.pred_boxes = BitMasks(torch.stack(pred_masks).bool()).get_bounding_boxes()
+    ev_b.process(
+        [{"image_id": 1, "file_name": "1.hdf5"}], [{"instances": inst}]
+    )
+    rec_b = ev_b._records[-1]
+
+    assert rec_a == rec_b, (
+        "HungarianInstanceEvaluator must ignore pred_boxes entirely - it derives its "
+        "own prefilter boxes from the masks"
+    )
+
+
+def test_evaluator_reads_no_pred_boxes_field():
+    """Static guard: if someone adds a pred_boxes read here, the two arms stop being
+    comparable, because Mask2Former's boxes are mask-derived rather than learned."""
+    import inspect
+
+    src = inspect.getsource(HungarianInstanceEvaluator.process)
+    assert "pred_boxes" not in src
+
+
+def test_softmax_scale_scores_are_filtered_not_crashed():
+    """Mask2Former scores come from softmax over num_classes + 1 and are then multiplied
+    by the mask score, so they sit on a different scale than MaskDINO's sigmoid-focal
+    scores. SCORE_THRESH=0.5 is therefore NOT the same operating point across the two
+    arms - the headline comparison should be threshold-free COCO segm AP, with the
+    Hungarian metrics read at each arm's own best-F1 threshold.
+
+    This test documents the consequence rather than papering over it: low-magnitude
+    scores are filtered out cleanly, they do not error.
+    """
+    gt = [(_square(10, 10), 0)]
+    pred = ([_square(11, 11)], [0.12], [0])
+
+    ev_strict = make_evaluator(num_classes=6, score_thresh=0.5)
+    rec_strict = run_one(ev_strict, 1, gt, pred)
+    assert rec_strict["num_pred"] == 0
+    assert rec_strict["num_gt"] == 1
+
+    ev_loose = make_evaluator(num_classes=6, score_thresh=0.1)
+    rec_loose = run_one(ev_loose, 1, gt, pred)
+    assert rec_loose["num_pred"] == 1
+    assert rec_loose["num_mask_matched"] == 1

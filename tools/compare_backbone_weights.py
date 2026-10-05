@@ -152,14 +152,11 @@ def linear_cka(x, y):
 
 
 def build_and_load_backbone(config_file, opts, backbone_sd, prefix, device):
-    from detectron2.config import get_cfg
     from detectron2.modeling.backbone import build_backbone
-    from detectron2.projects.deeplab import add_deeplab_config
-    from maskdino import add_maskdino_config
 
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskdino_config(cfg)
+    from maskdino import build_base_cfg
+
+    cfg = build_base_cfg()
     cfg.merge_from_file(config_file)
     if opts:
         cfg.merge_from_list(opts)

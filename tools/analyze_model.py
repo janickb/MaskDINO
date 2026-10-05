@@ -13,7 +13,6 @@ from detectron2.config import CfgNode, LazyConfig, get_cfg, instantiate
 from detectron2.data import build_detection_test_loader
 from detectron2.engine import default_argument_parser
 from detectron2.modeling import build_model
-from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.utils.analysis import (
     FlopCountAnalysis,
     activation_count_operators,
@@ -21,22 +20,24 @@ from detectron2.utils.analysis import (
 )
 from detectron2.utils.logger import setup_logger
 
-# fmt: off
+# Run as a bare script (`python tools/<name>.py`) puts tools/ on sys.path, not the
+# repo root, so `maskdino` would not resolve. Same idiom as the other tools here.
 import os
 import sys
-sys.path.insert(1, os.path.join(sys.path[0], '..'))
-# fmt: on
 
-from mask2former import add_maskformer2_config
+sys.path.insert(1, os.path.join(sys.path[0], ".."))
+
+from maskdino import build_base_cfg
 
 logger = logging.getLogger("detectron2")
 
 
 def setup(args):
     if args.config_file.endswith(".yaml"):
-        cfg = get_cfg()
-        add_deeplab_config(cfg)
-        add_maskformer2_config(cfg)
+        # Adds deeplab + MODEL.MaskDINO + MODEL.MASK_FORMER, so this works for either
+        # architecture's config. Upstream called add_maskformer2_config here, from a
+        # mask2former package this fork did not have.
+        cfg = build_base_cfg()
         cfg.merge_from_file(args.config_file)
         cfg.DATALOADER.NUM_WORKERS = 0
         cfg.merge_from_list(args.opts)

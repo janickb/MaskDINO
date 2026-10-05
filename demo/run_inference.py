@@ -26,11 +26,10 @@ import numpy as np
 from detectron2.config import get_cfg
 from detectron2.data import MetadataCatalog
 from detectron2.engine import DefaultPredictor
-from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.utils.colormap import random_color
 from detectron2.utils.visualizer import ColorMode, Visualizer, _create_text_labels
 
-from maskdino import add_maskdino_config, set_num_classes_from_metadata
+from maskdino import build_base_cfg, set_num_classes_from_metadata
 from sgdata.reader import read_image as read_hdf5_image
 
 HDF5_EXTS = (".hdf5", ".h5")
@@ -62,9 +61,7 @@ def get_parser():
 def main():
     args = get_parser().parse_args()
 
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskdino_config(cfg)
+    cfg = build_base_cfg()
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
 

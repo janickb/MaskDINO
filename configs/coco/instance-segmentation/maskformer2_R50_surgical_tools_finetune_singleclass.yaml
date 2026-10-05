@@ -1,0 +1,48 @@
+_BASE_: Base-Surgical-HDF5-M2F.yaml
+# Single-class twin of maskdino_R50_surgical_tools_finetune_singleclass.yaml: collapse
+# every instrument onto one class and measure class-agnostic localization only. The
+# cheapest end-to-end check that the whole Mask2Former pipeline is wired correctly.
+#
+# Key-for-key identical to the MaskDINO twin apart from WEIGHTS / OUTPUT_DIR and the
+# MODEL.MASK_FORMER namespace. In particular it deliberately does NOT set
+# BACKBONE.FREEZE_AT or TEST.NMS_IOU - the MaskDINO twin doesn't either, so both arms
+# train an unfrozen backbone with no dedup step, and the resolved-config parity test
+# stays green.
+#
+# NUM_CLASSES: 1 makes class_embed nn.Linear(hidden_dim, 2) here (num_classes + 1, the
+# extra row being the softmax no-object logit) vs nn.Linear(hidden_dim, 1) for
+# MaskDINO. HungarianInstanceEvaluator disables its misclassification metric when
+# NUM_CLASSES == 1, identically for both arms.
+MODEL:
+  WEIGHTS: "models/maskformer2_R50_bs16_50ep_coco_instance_mask43.7ap_boundary30.6ap.pkl"
+  SEM_SEG_HEAD:
+    # -1 sentinel: train_seta_mm_singleclass/val_seta_mm_singleclass collapse
+    # every real instrument category into one "surgical-instruments" class (see
+    # class_mapping.derive_single_class_mapping), so this fills in to 1.
+    NUM_CLASSES: -1
+DATASETS:
+  TRAIN: ("train_seta_mm_singleclass",)
+  TEST: ("val_seta_mm_singleclass",)
+INPUT:
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  MIN_VISIBILITY: 0.0
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0003
+  LR_SCHEDULER_NAME: "ReduceLROnPlateau"   # adaptive, metric-driven decay - not a fixed schedule
+  MAX_ITER: 50000
+  CHECKPOINT_PERIOD: 5000
+  WARMUP_ITERS: 250
+  WARMUP_FACTOR: 0.001     # added for carrying optimizer state
+  PLATEAU:
+    METRIC: "total_loss"     # training loss, not validation_loss: it is written every step
+    MODE: "min"
+    FACTOR: 0.5              # halve LR on each plateau, rather than PyTorch's default 10x cut
+    PATIENCE: 3              # checks (not iters) with no improvement before cutting
+    CHECK_PERIOD: 300        # iters between checks -> ~167 checks over MAX_ITER=50000
+    MIN_LR: 0.000002         # same floor the cosine version used, for comparability
+    THRESHOLD: 1e-2
+TEST:
+  EVAL_PERIOD: 5000
+OUTPUT_DIR: "runs/single_class_m2f_v1"

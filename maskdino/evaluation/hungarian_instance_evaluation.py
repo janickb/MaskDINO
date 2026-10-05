@@ -26,7 +26,7 @@
 #     and normalized rates with an explicit denominator - false_negatives_per_gt,
 #     false_positives_per_pred, misclassified_per_match.
 #
-# Config: cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.{ENABLED,SCORE_THRESH,IOU_THRESH,
+# Config: cfg.MODEL.<ARCH>.TEST.HUNGARIAN_EVAL.{ENABLED,SCORE_THRESH,IOU_THRESH,
 #         BOX_PREFILTER}  (see maskdino/config.py)
 #
 # NOTE: this assumes GT masks and predicted masks describe the SAME thing (both modal =
@@ -51,6 +51,8 @@ from detectron2.evaluation import DatasetEvaluator
 from detectron2.structures import BitMasks, pairwise_iou
 from detectron2.utils import comm
 from detectron2.utils.events import get_event_storage
+
+from ..config import arch_ns
 from scipy.optimize import linear_sum_assignment
 
 __all__ = ["HungarianInstanceEvaluator", "hungarian_match", "mask_iou_matrix"]
@@ -153,7 +155,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         self._logger = logging.getLogger(__name__)
         self._cpu_device = torch.device("cpu")
 
-        he = cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
+        he = arch_ns(cfg).TEST.HUNGARIAN_EVAL
         self._score_thresh = float(he.SCORE_THRESH)
         self._iou_thresh = float(he.IOU_THRESH)
         # Always the training-time GT filter, never a separate knob: recall must be

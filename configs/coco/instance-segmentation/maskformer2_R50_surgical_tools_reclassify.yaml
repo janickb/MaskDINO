@@ -1,0 +1,74 @@
+_BASE_: Base-Surgical-HDF5-M2F.yaml
+# Phase-2 "reclassification mode" twin of maskdino_R50_surgical_tools_reclassify.yaml:
+# load the phase-1 model, freeze everything except
+# sem_seg_head.predictor.class_embed, and retrain the class head on the sparse
+# single-instrument renders (set A + set B together).
+#
+# Two Mask2Former-specific differences from the MaskDINO twin, both structural:
+#  * No `DN: "no"` line. Mask2Former has no denoising branch and no num_classes-shaped
+#    label_enc, so there is nothing to switch off - the MaskDINO comment about
+#    "label_enc never used" has no analogue here.
+#  * class_embed is nn.Linear(hidden_dim, num_classes + 1): the extra row is the
+#    softmax no-object logit. MaskDINO's is nn.Linear(hidden_dim, num_classes) with
+#    sigmoid-focal loss and no background class. tools/adapt_classifier_checkpoint.py
+#    must be run with --arch mask2former so that row is carried over positionally
+#    rather than by canonical category id.
+#
+# WEIGHTS must point at an *adapted* phase-1 Mask2Former checkpoint. It CANNOT chain
+# off the MaskDINO phase-1 model_final.pth: only the R50 backbone would transfer, the
+# decoders are structurally incompatible. Run the phase-1 M2F config first, then:
+#   ./.venv/bin/python tools/adapt_classifier_checkpoint.py --arch mask2former \
+#     --src runs/<phase1-m2f-run>/model_final.pth
+MODEL:
+  WEIGHTS: "runs/phase1_training_seta_m2f_v1-0/model_final_reclass_adapted.pth"
+  SEM_SEG_HEAD:
+    NUM_CLASSES: -1   # derived from reclass_setab_mm (-> N=16); see class_mapping.py
+  MASK_FORMER:
+    NUM_OBJECT_QUERIES: 100
+    RECLASSIFY_FINETUNE:
+      ENABLED: True                  # freeze all but class_embed; forces labels-only loss
+    TEST:
+      NMS_IOU: 0.5
+      HUNGARIAN_EVAL:
+        ENABLED: True                # writes inference/instance_matching_confusion*.{csv,png}
+        PERIOD: 1000
+DATASETS:
+  TRAIN: ("reclass_setab_mm",)
+  TEST: ("val_setab_mm",)
+  TEST_SAMPLE_STRIDE: 4
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  IMAGE_SIZE: 1024
+  # No scale jitter: raw frames are already 1024x1024 (== IMAGE_SIZE), so scale=1.0
+  # makes ResizeScale/FixedSizeCrop a lossless no-op.
+  MIN_SCALE: 1.0
+  MAX_SCALE: 1.0
+  # Copy-paste occlusion (below) reuses this same field to drop instances that lose
+  # too much area to a later paste, but raising it also filters reclass_train's own
+  # original low-visibility instances.
+  MIN_VISIBILITY: 0.5
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024
+  # Identical copy-paste settings to the MaskDINO arm - the same CopyPasteCompositor
+  # object, driven from the same keys. See maskdino/data/augmentations/copy_paste.py.
+  COPY_PASTE:
+    ENABLED: True
+    MIN_INSTANCES: 0
+    MAX_INSTANCES: 10
+    MASK_INTERP: ["linear", "bicubic","lanczos"]
+    BLEND_MODES: ["none", "gaussian_blur_edge", "box_blur"]
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.00001        # a single linear head tolerates a higher LR than the full model
+  LR_SCHEDULER_NAME: "WarmupCosineLR"
+  BASE_LR_END: 0.00000005
+  MAX_ITER: 8000
+  WARMUP_ITERS: 1000
+  WARMUP_FACTOR: 0.0001
+  CHECKPOINT_PERIOD: 1000   # /home quota is tight - keep few large checkpoints
+TEST:
+  EVAL_PERIOD: 250
+OUTPUT_DIR: "runs/reclassify_m2f_4-1"
+DATALOADER:
+  NUM_WORKERS: 4
+  FILTER_EMPTY_ANNOTATIONS: True

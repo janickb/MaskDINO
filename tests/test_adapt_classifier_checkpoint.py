@@ -137,3 +137,79 @@ def test_row_out_of_range_raises():
     sd = _synthetic_sd(n=8)
     with pytest.raises(ValueError):
         adapt_class_head(sd, {11: 11}, derive_class_mapping(SETAB))  # row 11 >= 8
+
+
+# ---------------------------------------------------------------------------
+# Mask2Former arm: class_embed has num_classes + 1 rows (the trailing row is the
+# softmax no-object logit) and there is no label_enc, so adapt_class_head needs
+# arch="mask2former".
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_m2f_sd(n_classes=19, hidden=4):
+    """A Mask2Former-shaped source head: n_classes + 1 rows, canonical category_id i at
+    physical row i, and row n_classes holding the no-object logit. No label_enc."""
+    rows = n_classes + 1
+    return {
+        _W: torch.arange(rows, dtype=torch.float32)[:, None].repeat(1, hidden).clone(),
+        _B: torch.arange(rows, dtype=torch.float32).clone(),
+        _EW: torch.ones(rows),
+        "backbone.stem.conv1.weight": torch.randn(2, 2),  # unrelated, must survive
+    }
+
+
+def test_m2f_keeps_background_row_and_carries_by_canonical_id():
+    sd = _synthetic_m2f_sd()
+    cm_src = derive_class_mapping(SETB)
+    cm_t = derive_class_mapping(SETAB)  # N=16
+    src_c2r = {cid: cid for cid in cm_src.thing_dataset_id_to_contiguous_id}
+
+    carried, fresh = adapt_class_head(
+        sd, src_c2r, cm_t, arch="mask2former", eos_coef=0.1
+    )
+
+    n_tgt = cm_t.num_classes
+    assert sd[_W].shape == (n_tgt + 1, 4), "the extra no-object row must survive"
+    assert sd[_B].shape == (n_tgt + 1,)
+    # Set-B ids carried; set-A ids fresh.
+    assert set(carried) == set(cm_src.thing_dataset_id_to_contiguous_id)
+    assert set(fresh) == set(cm_t.thing_dataset_id_to_contiguous_id) - set(carried)
+    # Each carried row came from the physical row matching its canonical id.
+    for j in range(n_tgt):
+        cid = cm_t.canonical_id(j)
+        if cid in src_c2r:
+            assert sd[_W][j][0] == pytest.approx(float(cid))
+    # The no-object row is carried POSITIONALLY from the source's trailing row (19),
+    # not by canonical id - it is not a category.
+    assert sd[_W][n_tgt][0] == pytest.approx(19.0)
+    assert sd[_B][n_tgt] == pytest.approx(19.0)
+    # No label_enc is invented for an architecture that has none.
+    assert _E not in sd
+    assert sd[_EW].shape == (n_tgt + 1,) and sd[_EW][-1] == pytest.approx(0.1)
+    assert "backbone.stem.conv1.weight" in sd
+
+
+def test_m2f_arch_rejects_a_maskdino_checkpoint():
+    """A MaskDINO checkpoint has label_enc and no no-object row; adapting it as
+    mask2former would mis-index the class head, so it must fail loudly."""
+    sd = _synthetic_sd()  # has _E
+    with pytest.raises(KeyError, match="label_enc"):
+        adapt_class_head(
+            sd, {11: 11}, derive_class_mapping(SETAB), arch="mask2former"
+        )
+
+
+def test_maskdino_arch_is_still_the_default():
+    """Existing call sites must keep their behaviour: four tensors, no extra row."""
+    sd = _synthetic_sd()
+    cm_t = derive_class_mapping(SETAB)
+    adapt_class_head(sd, {11: 11}, cm_t)
+    assert sd[_W].shape == (cm_t.num_classes, 4)
+    assert _E in sd and sd[_E].shape == (cm_t.num_classes, 4)
+
+
+def test_unknown_arch_rejected():
+    with pytest.raises(ValueError, match="unknown arch"):
+        adapt_class_head(
+            _synthetic_sd(), {11: 11}, derive_class_mapping(SETAB), arch="nonsense"
+        )

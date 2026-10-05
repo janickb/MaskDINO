@@ -1,8 +1,4 @@
-# ------------------------------------------------------------------------
-# Copyright (c) 2022 IDEA. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 [see LICENSE for details]
-# ------------------------------------------------------------------------
-# Modified from Mask2Former https://github.com/facebookresearch/Mask2Former by Feng Li and Hao Zhang.
+# Copyright (c) Facebook, Inc. and its affiliates.
 from typing import Tuple
 
 import torch
@@ -17,19 +13,14 @@ from detectron2.modeling.postprocessing import sem_seg_postprocess
 from detectron2.structures import Boxes, ImageList, Instances, BitMasks
 from detectron2.utils.memory import retry_if_cuda_oom
 
+from maskdino.modeling.postprocess import class_aware_mask_nms
+
 from .modeling.criterion import SetCriterion
 from .modeling.matcher import HungarianMatcher
-from .utils import box_ops
-
-
-# Moved to maskdino/modeling/postprocess.py so mask2former shares one definition;
-# re-exported here so existing `from maskdino.maskdino import class_aware_mask_nms`
-# call sites keep working.
-from .modeling.postprocess import class_aware_mask_nms  # noqa: F401
 
 
 @META_ARCH_REGISTRY.register()
-class MaskDINO(nn.Module):
+class MaskFormer(nn.Module):
     """
     Main class for mask classification semantic segmentation architectures.
     """
@@ -54,14 +45,10 @@ class MaskDINO(nn.Module):
         panoptic_on: bool,
         instance_on: bool,
         test_topk_per_image: int,
-        data_loader: str,
-        pano_temp: float,
         nms_iou: float = 0.0,
-        focus_on_box: bool = False,
-        transform_eval: bool = False,
-        semantic_ce_loss: bool = False,
+        # reclassify-phase fine-tuning (see maskdino.config.add_surgical_arch_config)
         reclassify_finetune: bool = False,
-        reclassify_finetune_prefixes: Tuple[str] = ("sem_seg_head.predictor.class_embed",),
+        reclassify_finetune_prefixes: Tuple[str, ...] = (),
         reclassify_finetune_unfreeze_decoder: bool = False,
         reclassify_finetune_unfreeze_encoder: bool = False,
     ):
@@ -88,12 +75,9 @@ class MaskDINO(nn.Module):
             instance_on: bool, whether to output instance segmentation prediction
             panoptic_on: bool, whether to output panoptic segmentation prediction
             test_topk_per_image: int, instance segmentation parameter, keep topk instances per image
-            transform_eval: transform sigmoid score into softmax score to make score sharper
-            semantic_ce_loss: whether use cross-entroy loss in classification
         """
         super().__init__()
         self.backbone = backbone
-        self.pano_temp = pano_temp
         self.sem_seg_head = sem_seg_head
         self.criterion = criterion
         self.num_queries = num_queries
@@ -113,28 +97,32 @@ class MaskDINO(nn.Module):
         self.instance_on = instance_on
         self.panoptic_on = panoptic_on
         self.test_topk_per_image = test_topk_per_image
-        self.nms_iou = nms_iou
-
-        self.data_loader = data_loader
-        self.focus_on_box = focus_on_box
-        self.transform_eval = transform_eval
-        self.semantic_ce_loss = semantic_ce_loss
 
         if not self.semantic_on:
             assert self.sem_seg_postprocess_before_inference
 
+        # --- this fork's additions, mirroring maskdino/maskdino.py so the two arms
+        # --- share one postprocess and one freezing scheme. ---
+        self.nms_iou = nms_iou
+
         self.reclassify_finetune = reclassify_finetune
         self.reclassify_finetune_prefixes = tuple(reclassify_finetune_prefixes)
         if reclassify_finetune_unfreeze_decoder:
-            # DINO decoder stack + the heads it drives. The backbone and the
-            # MSDeformAttn pixel encoder (sem_seg_head.pixel_decoder) stay frozen;
-            # so do label_enc (DN off), query_feat/query_embed (fixed query init)
-            # and enc_output (two-stage query selection).
+            # Counterpart of maskdino/maskdino.py's block: same intent, different module
+            # names. MultiScaleMaskedTransformerDecoder has NO bbox_embed (no box branch
+            # at all), and its layers are three parallel ModuleLists rather than one
+            # `decoder` submodule. input_proj / query_feat / query_embed / level_embed
+            # stay FROZEN, matching MaskDINO's choice to freeze query_feat/query_embed/
+            # enc_output - so "unfreeze decoder" means the same thing on both sides (the
+            # layer stack plus the heads it drives). For a wider variant, set
+            # MODEL.MASK_FORMER.RECLASSIFY_FINETUNE.TRAINABLE_PARAM_PREFIXES in YAML
+            # rather than widening this list - keep the two code paths symmetric.
             self.reclassify_finetune_prefixes = self.reclassify_finetune_prefixes + (
-                "sem_seg_head.predictor.decoder",
+                "sem_seg_head.predictor.transformer_self_attention_layers",
+                "sem_seg_head.predictor.transformer_cross_attention_layers",
+                "sem_seg_head.predictor.transformer_ffn_layers",
+                "sem_seg_head.predictor.decoder_norm",
                 "sem_seg_head.predictor.mask_embed",
-                "sem_seg_head.predictor._bbox_embed",
-                "sem_seg_head.predictor.bbox_embed",
             )
 
         if reclassify_finetune_unfreeze_encoder:
@@ -144,12 +132,19 @@ class MaskDINO(nn.Module):
 
         if self.reclassify_finetune:
             trainable = 0
-            for name, p in self.named_parameters():
+            trainable_params = 0
+            for name, prm in self.named_parameters():
                 keep = name.startswith(self.reclassify_finetune_prefixes)
-                p.requires_grad_(keep)
+                prm.requires_grad_(keep)
                 trainable += keep
+                trainable_params += prm.numel() if keep else 0
+            # Also print the parameter total, not just the tensor count: UNFREEZE_DECODER
+            # covers structurally different parameter sets in the two architectures, so
+            # the tensor counts are not comparable and the param totals are what you
+            # actually need when reporting an adaptation-capacity comparison.
             print(
                 f'[reclassify-finetune] {trainable} trainable parameter tensor(s), '
+                f'{trainable_params} trainable parameter(s), '
                 f'prefixes={self.reclassify_finetune_prefixes}'
             )
 
@@ -161,112 +156,77 @@ class MaskDINO(nn.Module):
         sem_seg_head = build_sem_seg_head(cfg, backbone.output_shape())
 
         # Loss parameters:
-        deep_supervision = cfg.MODEL.MaskDINO.DEEP_SUPERVISION
-        no_object_weight = cfg.MODEL.MaskDINO.NO_OBJECT_WEIGHT
+        deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
+        no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
 
         # loss weights
-        class_weight = cfg.MODEL.MaskDINO.CLASS_WEIGHT
-        cost_class_weight = cfg.MODEL.MaskDINO.COST_CLASS_WEIGHT
-        cost_dice_weight = cfg.MODEL.MaskDINO.COST_DICE_WEIGHT
-        dice_weight = cfg.MODEL.MaskDINO.DICE_WEIGHT  #
-        cost_mask_weight = cfg.MODEL.MaskDINO.COST_MASK_WEIGHT  #
-        mask_weight = cfg.MODEL.MaskDINO.MASK_WEIGHT
-        cost_box_weight = cfg.MODEL.MaskDINO.COST_BOX_WEIGHT
-        box_weight = cfg.MODEL.MaskDINO.BOX_WEIGHT  #
-        cost_giou_weight = cfg.MODEL.MaskDINO.COST_GIOU_WEIGHT
-        giou_weight = cfg.MODEL.MaskDINO.GIOU_WEIGHT  #
-        # building matcher
+        class_weight = cfg.MODEL.MASK_FORMER.CLASS_WEIGHT
+        dice_weight = cfg.MODEL.MASK_FORMER.DICE_WEIGHT
+        mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
+
+        # building criterion
         matcher = HungarianMatcher(
-            cost_class=cost_class_weight,
-            cost_mask=cost_mask_weight,
-            cost_dice=cost_dice_weight,
-            cost_box=cost_box_weight,
-            cost_giou=cost_giou_weight,
-            num_points=cfg.MODEL.MaskDINO.TRAIN_NUM_POINTS,
+            cost_class=class_weight,
+            cost_mask=mask_weight,
+            cost_dice=dice_weight,
+            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
         )
 
-        weight_dict = {"loss_ce": class_weight}
-        weight_dict.update({"loss_mask": mask_weight, "loss_dice": dice_weight})
-        weight_dict.update({"loss_bbox":box_weight,"loss_giou":giou_weight})
-        # two stage is the query selection scheme
-        if cfg.MODEL.MaskDINO.TWO_STAGE:
-            interm_weight_dict = {}
-            interm_weight_dict.update({k + f'_interm': v for k, v in weight_dict.items()})
-            weight_dict.update(interm_weight_dict)
-        # denoising training
-        dn = cfg.MODEL.MaskDINO.DN
-        if dn == "standard":
-            weight_dict.update({k + f"_dn": v for k, v in weight_dict.items() if k!="loss_mask" and k!="loss_dice" })
-            dn_losses=["labels","boxes"]
-        elif dn == "seg":
-            weight_dict.update({k + f"_dn": v for k, v in weight_dict.items()})
-            dn_losses=["labels", "masks","boxes"]
-        else:
-            dn_losses=[]
+        weight_dict = {"loss_ce": class_weight, "loss_mask": mask_weight, "loss_dice": dice_weight}
+
         if deep_supervision:
-            dec_layers = cfg.MODEL.MaskDINO.DEC_LAYERS
+            dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
             aux_weight_dict = {}
-            for i in range(dec_layers):
+            for i in range(dec_layers - 1):
                 aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
             weight_dict.update(aux_weight_dict)
-        if cfg.MODEL.MaskDINO.BOX_LOSS:
-            losses = ["labels", "masks","boxes"]
-        else:
-            losses = ["labels", "masks"]
-        if (
-            cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENABLED
-            and not cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_DECODER
-            and not cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER
-        ):
-            # Only class_embed trains; mask/box losses have no path to it.
+
+        losses = ["labels", "masks"]
+        rf = cfg.MODEL.MASK_FORMER.RECLASSIFY_FINETUNE
+        if rf.ENABLED and not rf.UNFREEZE_DECODER and not rf.UNFREEZE_ENCODER:
+            # Only class_embed trains; the mask/dice losses have no gradient path to it.
+            # Same gating as maskdino/maskdino.py's from_config. Leaving loss_mask /
+            # loss_dice in weight_dict is harmless - forward() only weights keys the
+            # criterion actually returned.
             losses = ["labels"]
-        # building criterion
+
         criterion = SetCriterion(
             sem_seg_head.num_classes,
             matcher=matcher,
             weight_dict=weight_dict,
             eos_coef=no_object_weight,
             losses=losses,
-            num_points=cfg.MODEL.MaskDINO.TRAIN_NUM_POINTS,
-            oversample_ratio=cfg.MODEL.MaskDINO.OVERSAMPLE_RATIO,
-            importance_sample_ratio=cfg.MODEL.MaskDINO.IMPORTANCE_SAMPLE_RATIO,
-            dn=cfg.MODEL.MaskDINO.DN,
-            dn_losses=dn_losses,
-            panoptic_on=cfg.MODEL.MaskDINO.PANO_BOX_LOSS,
-            semantic_ce_loss=cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and not cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
+            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+            oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
+            importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
         )
 
         return {
             "backbone": backbone,
             "sem_seg_head": sem_seg_head,
             "criterion": criterion,
-            "num_queries": cfg.MODEL.MaskDINO.NUM_OBJECT_QUERIES,
-            "object_mask_threshold": cfg.MODEL.MaskDINO.TEST.OBJECT_MASK_THRESHOLD,
-            "overlap_threshold": cfg.MODEL.MaskDINO.TEST.OVERLAP_THRESHOLD,
+            "num_queries": cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES,
+            "object_mask_threshold": cfg.MODEL.MASK_FORMER.TEST.OBJECT_MASK_THRESHOLD,
+            "overlap_threshold": cfg.MODEL.MASK_FORMER.TEST.OVERLAP_THRESHOLD,
             "metadata": MetadataCatalog.get(cfg.DATASETS.TRAIN[0]),
-            "size_divisibility": cfg.MODEL.MaskDINO.SIZE_DIVISIBILITY,
+            "size_divisibility": cfg.MODEL.MASK_FORMER.SIZE_DIVISIBILITY,
             "sem_seg_postprocess_before_inference": (
-                cfg.MODEL.MaskDINO.TEST.SEM_SEG_POSTPROCESSING_BEFORE_INFERENCE
-                or cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON
-                or cfg.MODEL.MaskDINO.TEST.INSTANCE_ON
+                cfg.MODEL.MASK_FORMER.TEST.SEM_SEG_POSTPROCESSING_BEFORE_INFERENCE
+                or cfg.MODEL.MASK_FORMER.TEST.PANOPTIC_ON
+                or cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON
             ),
             "pixel_mean": cfg.MODEL.PIXEL_MEAN,
             "pixel_std": cfg.MODEL.PIXEL_STD,
             # inference
-            "semantic_on": cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON,
-            "instance_on": cfg.MODEL.MaskDINO.TEST.INSTANCE_ON,
-            "panoptic_on": cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
+            "semantic_on": cfg.MODEL.MASK_FORMER.TEST.SEMANTIC_ON,
+            "instance_on": cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON,
+            "panoptic_on": cfg.MODEL.MASK_FORMER.TEST.PANOPTIC_ON,
             "test_topk_per_image": cfg.TEST.DETECTIONS_PER_IMAGE,
-            "nms_iou": cfg.MODEL.MaskDINO.TEST.NMS_IOU,
-            "data_loader": cfg.INPUT.DATASET_MAPPER_NAME,
-            "focus_on_box": cfg.MODEL.MaskDINO.TEST.TEST_FOUCUS_ON_BOX,
-            "transform_eval": cfg.MODEL.MaskDINO.TEST.PANO_TRANSFORM_EVAL,
-            "pano_temp": cfg.MODEL.MaskDINO.TEST.PANO_TEMPERATURE,
-            "semantic_ce_loss": cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and not cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON,
-            "reclassify_finetune": cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.ENABLED,
-            "reclassify_finetune_prefixes": tuple(cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.TRAINABLE_PARAM_PREFIXES),
-            "reclassify_finetune_unfreeze_decoder": cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_DECODER,
-            "reclassify_finetune_unfreeze_encoder": cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE.UNFREEZE_ENCODER,
+            "nms_iou": cfg.MODEL.MASK_FORMER.TEST.NMS_IOU,
+            "reclassify_finetune": rf.ENABLED,
+            "reclassify_finetune_prefixes": tuple(rf.TRAINABLE_PARAM_PREFIXES),
+            "reclassify_finetune_unfreeze_decoder": rf.UNFREEZE_DECODER,
+            "reclassify_finetune_unfreeze_encoder": rf.UNFREEZE_ENCODER,
         }
 
     @property
@@ -304,21 +264,18 @@ class MaskDINO(nn.Module):
         images = ImageList.from_tensors(images, self.size_divisibility)
 
         features = self.backbone(images.tensor)
+        outputs = self.sem_seg_head(features)
 
         if self.training:
-            # dn_args={"scalar":30,"noise_scale":0.4}
             # mask classification target
             if "instances" in batched_inputs[0]:
                 gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
-                if 'detr' in self.data_loader:
-                    targets = self.prepare_targets_detr(gt_instances, images)
-                else:
-                    targets = self.prepare_targets(gt_instances, images)
+                targets = self.prepare_targets(gt_instances, images)
             else:
                 targets = None
-            outputs,mask_dict = self.sem_seg_head(features,targets=targets)
+
             # bipartite matching-based loss
-            losses = self.criterion(outputs, targets,mask_dict)
+            losses = self.criterion(outputs, targets)
 
             for k in list(losses.keys()):
                 if k in self.criterion.weight_dict:
@@ -328,10 +285,8 @@ class MaskDINO(nn.Module):
                     losses.pop(k)
             return losses
         else:
-            outputs, _ = self.sem_seg_head(features)
             mask_cls_results = outputs["pred_logits"]
             mask_pred_results = outputs["pred_masks"]
-            mask_box_results = outputs["pred_boxes"]
             # upsample masks
             mask_pred_results = F.interpolate(
                 mask_pred_results,
@@ -343,22 +298,18 @@ class MaskDINO(nn.Module):
             del outputs
 
             processed_results = []
-            for mask_cls_result, mask_pred_result, mask_box_result, input_per_image, image_size in zip(
-                mask_cls_results, mask_pred_results, mask_box_results, batched_inputs, images.image_sizes
-            ):  # image_size is augmented size, not divisible to 32
-                height = input_per_image.get("height", image_size[0])  # real size
+            for mask_cls_result, mask_pred_result, input_per_image, image_size in zip(
+                mask_cls_results, mask_pred_results, batched_inputs, images.image_sizes
+            ):
+                height = input_per_image.get("height", image_size[0])
                 width = input_per_image.get("width", image_size[1])
                 processed_results.append({})
-                new_size = mask_pred_result.shape[-2:]  # padded size (divisible to 32)
-
 
                 if self.sem_seg_postprocess_before_inference:
                     mask_pred_result = retry_if_cuda_oom(sem_seg_postprocess)(
                         mask_pred_result, image_size, height, width
                     )
                     mask_cls_result = mask_cls_result.to(mask_pred_result)
-                    # mask_box_result = mask_box_result.to(mask_pred_result)
-                    # mask_box_result = self.box_postprocess(mask_box_result, height, width)
 
                 # semantic segmentation inference
                 if self.semantic_on:
@@ -371,57 +322,19 @@ class MaskDINO(nn.Module):
                 if self.panoptic_on:
                     panoptic_r = retry_if_cuda_oom(self.panoptic_inference)(mask_cls_result, mask_pred_result)
                     processed_results[-1]["panoptic_seg"] = panoptic_r
-
+                
                 # instance segmentation inference
-
                 if self.instance_on:
-                    mask_box_result = mask_box_result.to(mask_pred_result)
-                    height = new_size[0]/image_size[0]*height
-                    width = new_size[1]/image_size[1]*width
-                    mask_box_result = self.box_postprocess(mask_box_result, height, width)
-
-                    instance_r = retry_if_cuda_oom(self.instance_inference)(mask_cls_result, mask_pred_result, mask_box_result)
+                    instance_r = retry_if_cuda_oom(self.instance_inference)(mask_cls_result, mask_pred_result)
                     processed_results[-1]["instances"] = instance_r
 
             return processed_results
 
     def prepare_targets(self, targets, images):
         h_pad, w_pad = images.tensor.shape[-2:]
-        # Single-class mode (NUM_CLASSES == 1): the surgical datasets still hand out
-        # the full contiguous instrument label space (0..N-1, see
-        # maskdino/data/class_mapping.py), so any label > 0 would index past
-        # label_enc / class_embed and trip a device-side assert. Collapse every
-        # instrument to the single foreground class.
-        collapse_labels = self.sem_seg_head.num_classes == 1
         new_targets = []
         for targets_per_image in targets:
             # pad gt
-            h, w = targets_per_image.image_size
-            image_size_xyxy = torch.as_tensor([w, h, w, h], dtype=torch.float, device=self.device)
-
-            gt_masks = targets_per_image.gt_masks
-            padded_masks = torch.zeros((gt_masks.shape[0], h_pad, w_pad), dtype=gt_masks.dtype, device=gt_masks.device)
-            padded_masks[:, : gt_masks.shape[1], : gt_masks.shape[2]] = gt_masks
-            gt_classes = targets_per_image.gt_classes
-            if collapse_labels:
-                gt_classes = torch.zeros_like(gt_classes)
-            new_targets.append(
-                {
-                    "labels": gt_classes,
-                    "masks": padded_masks,
-                    "boxes":box_ops.box_xyxy_to_cxcywh(targets_per_image.gt_boxes.tensor)/image_size_xyxy
-                }
-            )
-        return new_targets
-
-    def prepare_targets_detr(self, targets, images):
-        h_pad, w_pad = images.tensor.shape[-2:]
-        new_targets = []
-        for targets_per_image in targets:
-            # pad gt
-            h, w = targets_per_image.image_size
-            image_size_xyxy = torch.as_tensor([w, h, w, h], dtype=torch.float, device=self.device)
-
             gt_masks = targets_per_image.gt_masks
             padded_masks = torch.zeros((gt_masks.shape[0], h_pad, w_pad), dtype=gt_masks.dtype, device=gt_masks.device)
             padded_masks[:, : gt_masks.shape[1], : gt_masks.shape[2]] = gt_masks
@@ -429,45 +342,27 @@ class MaskDINO(nn.Module):
                 {
                     "labels": targets_per_image.gt_classes,
                     "masks": padded_masks,
-                    "boxes": box_ops.box_xyxy_to_cxcywh(targets_per_image.gt_boxes.tensor) / image_size_xyxy
                 }
             )
         return new_targets
 
     def semantic_inference(self, mask_cls, mask_pred):
-        # if use cross-entropy loss in training, evaluate with softmax
-        if self.semantic_ce_loss:
-            mask_cls = F.softmax(mask_cls, dim=-1)[..., :-1]
-            mask_pred = mask_pred.sigmoid()
-            semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
-            return semseg
-        # if use focal loss in training, evaluate with sigmoid. As sigmoid is mainly for detection and not sharp
-        # enough for semantic and panoptic segmentation, we additionally use use softmax with a temperature to
-        # make the score sharper.
-        else:
-            T = self.pano_temp
-            mask_cls = mask_cls.sigmoid()
-            if self.transform_eval:
-                mask_cls = F.softmax(mask_cls / T, dim=-1)  # already sigmoid
-            mask_pred = mask_pred.sigmoid()
-            semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
-            return semseg
+        mask_cls = F.softmax(mask_cls, dim=-1)[..., :-1]
+        mask_pred = mask_pred.sigmoid()
+        semseg = torch.einsum("qc,qhw->chw", mask_cls, mask_pred)
+        return semseg
 
     def panoptic_inference(self, mask_cls, mask_pred):
-        # As we use focal loss in training, evaluate with sigmoid. As sigmoid is mainly for detection and not sharp
-        # enough for semantic and panoptic segmentation, we additionally use use softmax with a temperature to
-        # make the score sharper.
-        prob = 0.5
-        T = self.pano_temp
-        scores, labels = mask_cls.sigmoid().max(-1)
+        scores, labels = F.softmax(mask_cls, dim=-1).max(-1)
         mask_pred = mask_pred.sigmoid()
+
         keep = labels.ne(self.sem_seg_head.num_classes) & (scores > self.object_mask_threshold)
-        # added process
-        if self.transform_eval:
-            scores, labels = F.softmax(mask_cls.sigmoid() / T, dim=-1).max(-1)
         cur_scores = scores[keep]
         cur_classes = labels[keep]
         cur_masks = mask_pred[keep]
+        cur_mask_cls = mask_cls[keep]
+        cur_mask_cls = cur_mask_cls[:, :-1]
+
         cur_prob_masks = cur_scores.view(-1, 1, 1) * cur_masks
 
         h, w = cur_masks.shape[-2:]
@@ -487,8 +382,8 @@ class MaskDINO(nn.Module):
                 pred_class = cur_classes[k].item()
                 isthing = pred_class in self.metadata.thing_dataset_id_to_contiguous_id.values()
                 mask_area = (cur_mask_ids == k).sum().item()
-                original_area = (cur_masks[k] >= prob).sum().item()
-                mask = (cur_mask_ids == k) & (cur_masks[k] >= prob)
+                original_area = (cur_masks[k] >= 0.5).sum().item()
+                mask = (cur_mask_ids == k) & (cur_masks[k] >= 0.5)
 
                 if mask_area > 0 and original_area > 0 and mask.sum().item() > 0:
                     if mask_area / original_area < self.overlap_threshold:
@@ -515,41 +410,76 @@ class MaskDINO(nn.Module):
 
             return panoptic_seg, segments_info
 
-    def instance_inference(self, mask_cls, mask_pred, mask_box_result):
+    def instance_inference(self, mask_cls, mask_pred):
         # mask_pred is already processed to have the same shape as original input
         image_size = mask_pred.shape[-2:]
-        scores = mask_cls.sigmoid()  # [100, 80]
+
+        # [Q, K]
+        scores = F.softmax(mask_cls, dim=-1)[:, :-1]
         labels = torch.arange(self.sem_seg_head.num_classes, device=self.device).unsqueeze(0).repeat(self.num_queries, 1).flatten(0, 1)
-        scores_per_image, topk_indices = scores.flatten(0, 1).topk(self.test_topk_per_image, sorted=False)  # select 100
+        # scores_per_image, topk_indices = scores.flatten(0, 1).topk(self.num_queries, sorted=False)
+        scores_per_image, topk_indices = scores.flatten(0, 1).topk(self.test_topk_per_image, sorted=False)
         labels_per_image = labels[topk_indices]
+
         topk_indices = topk_indices // self.sem_seg_head.num_classes
+        # mask_pred = mask_pred.unsqueeze(1).repeat(1, self.sem_seg_head.num_classes, 1).flatten(0, 1)
         mask_pred = mask_pred[topk_indices]
+
         # if this is panoptic segmentation, we only keep the "thing" classes
         if self.panoptic_on:
             keep = torch.zeros_like(scores_per_image).bool()
             for i, lab in enumerate(labels_per_image):
                 keep[i] = lab in self.metadata.thing_dataset_id_to_contiguous_id.values()
+
             scores_per_image = scores_per_image[keep]
             labels_per_image = labels_per_image[keep]
             mask_pred = mask_pred[keep]
+
         result = Instances(image_size)
         # mask (before sigmoid)
         result.pred_masks = (mask_pred > 0).float()
-        # half mask box half pred box
-        mask_box_result = mask_box_result[topk_indices]
-        if self.panoptic_on:
-            mask_box_result = mask_box_result[keep]
-        result.pred_boxes = Boxes(mask_box_result)
-        # Uncomment the following to get boxes from masks (this is slow)
-        # result.pred_boxes = BitMasks(mask_pred > 0).get_bounding_boxes()
+        # Upstream leaves pred_boxes all-zeros because COCOEvaluator's segm task never
+        # reads it. Two consumers in this fork do:
+        #   1) DropTruncatedPredictions (maskdino/evaluation/truncated_prediction_filter.py)
+        #      reads instances.pred_boxes.tensor and runs touches_frame_edge() on it. A
+        #      [0, 0, 0, 0] box touches the left AND top edge, so with
+        #      INPUT.EXCLUDE_TRUNCATED_INSTANCES True - the DEFAULT - it would drop EVERY
+        #      prediction, giving segm AP 0.0 with no warning anywhere. That reads as "the
+        #      model cannot do this task" rather than as a plumbing bug, which is why this
+        #      is not left as an optional speed/accuracy trade-off.
+        #   2) COCOEvaluator's bbox task needs real boxes to report bbox AP beside segm AP.
+        #
+        # These are NOT a learned box prediction - Mask2Former has no box branch - so the
+        # resulting bbox AP is a re-parameterization of this arm's segm AP and must not be
+        # compared head-to-head against MaskDINO's learned-box bbox AP (supervised with
+        # L1 + GIoU, and helped by denoising training). Read segm AP instead.
+        #
+        # Derived from result.pred_masks rather than `mask_pred > 0` so the box always
+        # matches the mask that actually ships (panoptic `keep` filtering is already
+        # applied above). If this ever shows up in an eval profile, the cheaper
+        # equivalent is Boxes(masks_to_boxes(...)) from maskdino/utils/misc.py.
+        # .to(device): BitMasks.get_bounding_boxes() allocates its output with
+        # torch.zeros(N, 4) and no device argument, so it returns CPU boxes even for
+        # CUDA masks. Left on CPU, the class_aware_mask_nms slice below indexes a CPU
+        # box tensor with a CUDA keep-mask and raises "indices should be either on cpu
+        # or on the same device as the indexed tensor". Keeping every Instances field on
+        # one device also matters for .to(cpu) in the evaluators.
+        result.pred_boxes = BitMasks(result.pred_masks.bool()).get_bounding_boxes().to(
+            result.pred_masks.device
+        )
 
         # calculate average mask prob
         mask_scores_per_image = (mask_pred.sigmoid().flatten(1) * result.pred_masks.flatten(1)).sum(1) / (result.pred_masks.flatten(1).sum(1) + 1e-6)
-        if self.focus_on_box:
-            mask_scores_per_image = 1.0
         result.scores = scores_per_image * mask_scores_per_image
         result.pred_classes = labels_per_image
 
+        # Per-class mask NMS, shared with maskdino/maskdino.py so both arms run the same
+        # dedup. Upstream Mask2Former has no dedup step at all, so the 0.0 default
+        # reproduces upstream exactly; the surgical configs set 0.5 to match the MaskDINO
+        # arm. Both arms MUST use the same value - the queries x classes flattening above
+        # can emit one mask under several labels, and those duplicates count as false
+        # positives in the Hungarian evaluator, so an asymmetric setting moves precision
+        # directly. Runs after pred_boxes is set, so result[keep] slices a real Boxes.
         if self.nms_iou > 0 and len(result) > 1:
             keep = class_aware_mask_nms(
                 result.pred_masks.bool(), result.scores, result.pred_classes, self.nms_iou
@@ -557,13 +487,3 @@ class MaskDINO(nn.Module):
             result = result[keep]
 
         return result
-
-    def box_postprocess(self, out_bbox, img_h, img_w):
-        # postprocess box height and width
-        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
-        scale_fct = torch.tensor([img_w, img_h, img_w, img_h])
-        scale_fct = scale_fct.to(out_bbox)
-        boxes = boxes * scale_fct
-        return boxes
-
-

@@ -38,18 +38,51 @@ _LABEL_ENC_W = "sem_seg_head.predictor.label_enc.weight"
 _EMPTY_WEIGHT = "criterion.empty_weight"
 
 
-def adapt_class_head(sd, src_canonical_to_row, cm_target, *, seed=0, eos_coef=0.1):
-    """In place: resize the four num_classes-shaped tensors of ``sd`` to
-    ``cm_target``'s label space, copying rows by canonical id. Returns
+def adapt_class_head(
+    sd, src_canonical_to_row, cm_target, *, seed=0, eos_coef=0.1, arch="maskdino"
+):
+    """In place: resize the num_classes-shaped tensors of ``sd`` to ``cm_target``'s
+    label space, copying rows by canonical id. Returns
     ``(carried_canonical_ids, fresh_canonical_ids)``.
+
+    arch:
+      "maskdino"    - class_embed has exactly num_classes rows (sigmoid focal loss, no
+                      background class), plus a num_classes-wide label_enc used by
+                      denoising training. Four tensors are resized.
+      "mask2former" - class_embed has num_classes + 1 rows: the last is the softmax
+                      no-object logit, carried over POSITIONALLY (it has no canonical
+                      category id). There is no label_enc at all, so only three
+                      tensors are resized.
+
+    criterion.empty_weight is (num_classes + 1,) in both, with [-1] = eos_coef.
     """
-    for k in (_CLASS_EMBED_W, _CLASS_EMBED_B, _LABEL_ENC_W):
+    if arch not in ("maskdino", "mask2former"):
+        raise ValueError(f"unknown arch {arch!r}")
+    is_m2f = arch == "mask2former"
+
+    required = [_CLASS_EMBED_W, _CLASS_EMBED_B]
+    if not is_m2f:
+        # Mask2Former has no denoising branch, so no label_enc to carry.
+        required.append(_LABEL_ENC_W)
+    for k in required:
         if k not in sd:
             raise KeyError(f"state dict is missing '{k}'")
+    if is_m2f and _LABEL_ENC_W in sd:
+        raise KeyError(
+            f"--arch mask2former but the checkpoint has '{_LABEL_ENC_W}'; this looks "
+            f"like a MaskDINO checkpoint"
+        )
 
     n_tgt = cm_target.num_classes
     hidden = sd[_CLASS_EMBED_W].shape[1]
-    n_src = sd[_CLASS_EMBED_W].shape[0]
+    n_src_rows = sd[_CLASS_EMBED_W].shape[0]
+    # Mask2Former's head carries a trailing no-object row; MaskDINO's does not.
+    n_src = n_src_rows - 1 if is_m2f else n_src_rows
+    if is_m2f and n_src <= 0:
+        raise ValueError(
+            f"--arch mask2former expects class_embed with num_classes + 1 rows, got "
+            f"{n_src_rows}"
+        )
     max_row = max(src_canonical_to_row.values(), default=-1)
     if max_row >= n_src:
         raise ValueError(
@@ -60,11 +93,15 @@ def adapt_class_head(sd, src_canonical_to_row, cm_target, *, seed=0, eos_coef=0.
     # Fresh templates with the model's own default init (class_embed is a plain
     # nn.Linear - no prior-prob bias; label_enc a plain nn.Embedding).
     torch.manual_seed(seed)
-    new_w = nn.Linear(hidden, n_tgt).weight.detach().clone()
-    new_b = nn.Linear(hidden, n_tgt).bias.detach().clone()
-    new_e = nn.Embedding(n_tgt, hidden).weight.detach().clone()
+    n_rows = n_tgt + 1 if is_m2f else n_tgt
+    new_w = nn.Linear(hidden, n_rows).weight.detach().clone()
+    new_b = nn.Linear(hidden, n_rows).bias.detach().clone()
+    new_e = (
+        None if is_m2f else nn.Embedding(n_tgt, hidden).weight.detach().clone()
+    )
 
-    src_w, src_b, src_e = sd[_CLASS_EMBED_W], sd[_CLASS_EMBED_B], sd[_LABEL_ENC_W]
+    src_w, src_b = sd[_CLASS_EMBED_W], sd[_CLASS_EMBED_B]
+    src_e = None if is_m2f else sd[_LABEL_ENC_W]
     carried, fresh = [], []
     for j in range(n_tgt):
         c = cm_target.canonical_id(j)
@@ -75,11 +112,19 @@ def adapt_class_head(sd, src_canonical_to_row, cm_target, *, seed=0, eos_coef=0.
         carried.append(c)
         new_w[j] = src_w[row]
         new_b[j] = src_b[row]
-        new_e[j] = src_e[row]
+        if new_e is not None:
+            new_e[j] = src_e[row]
+
+    if is_m2f:
+        # Carry the no-object row positionally: it is the trailing logit of the softmax
+        # over num_classes + 1, not a category, so it has no canonical id to match on.
+        new_w[n_tgt] = src_w[n_src]
+        new_b[n_tgt] = src_b[n_src]
 
     sd[_CLASS_EMBED_W] = new_w
     sd[_CLASS_EMBED_B] = new_b
-    sd[_LABEL_ENC_W] = new_e
+    if new_e is not None:
+        sd[_LABEL_ENC_W] = new_e
     ew = torch.ones(n_tgt + 1)
     ew[-1] = eos_coef
     sd[_EMPTY_WEIGHT] = ew
@@ -107,9 +152,17 @@ def main():
         "--eos-coef",
         type=float,
         default=0.1,
-        help="criterion.empty_weight[-1] (cfg.MODEL.MaskDINO.NO_OBJECT_WEIGHT)",
+        help="criterion.empty_weight[-1] (cfg.MODEL.<ARCH>.NO_OBJECT_WEIGHT)",
     )
     ap.add_argument("--seed", type=int, default=0, help="fresh-row init seed")
+    ap.add_argument(
+        "--arch",
+        default="maskdino",
+        choices=("maskdino", "mask2former"),
+        help="checkpoint's meta-architecture. mask2former: class_embed has "
+        "num_classes + 1 rows (trailing softmax no-object logit, carried positionally) "
+        "and there is no label_enc.",
+    )
     args = ap.parse_args()
 
     sys.path.insert(1, os.path.join(os.path.dirname(__file__), ".."))
@@ -126,7 +179,7 @@ def main():
 
     try:
         carried, fresh = adapt_class_head(
-            sd, src_c2r, cm_t, seed=args.seed, eos_coef=args.eos_coef
+            sd, src_c2r, cm_t, seed=args.seed, eos_coef=args.eos_coef, arch=args.arch
         )
     except (KeyError, ValueError) as exc:
         sys.exit(f"{args.src}: {exc}")
