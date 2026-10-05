@@ -419,6 +419,12 @@ class MaskDINO(nn.Module):
 
     def prepare_targets(self, targets, images):
         h_pad, w_pad = images.tensor.shape[-2:]
+        # Single-class mode (NUM_CLASSES == 1): the surgical datasets still hand out
+        # the full contiguous instrument label space (0..N-1, see
+        # maskdino/data/class_mapping.py), so any label > 0 would index past
+        # label_enc / class_embed and trip a device-side assert. Collapse every
+        # instrument to the single foreground class.
+        collapse_labels = self.sem_seg_head.num_classes == 1
         new_targets = []
         for targets_per_image in targets:
             # pad gt
@@ -428,9 +434,12 @@ class MaskDINO(nn.Module):
             gt_masks = targets_per_image.gt_masks
             padded_masks = torch.zeros((gt_masks.shape[0], h_pad, w_pad), dtype=gt_masks.dtype, device=gt_masks.device)
             padded_masks[:, : gt_masks.shape[1], : gt_masks.shape[2]] = gt_masks
+            gt_classes = targets_per_image.gt_classes
+            if collapse_labels:
+                gt_classes = torch.zeros_like(gt_classes)
             new_targets.append(
                 {
-                    "labels": targets_per_image.gt_classes,
+                    "labels": gt_classes,
                     "masks": padded_masks,
                     "boxes":box_ops.box_xyxy_to_cxcywh(targets_per_image.gt_boxes.tensor)/image_size_xyxy
                 }
