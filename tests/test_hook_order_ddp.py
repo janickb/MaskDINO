@@ -14,7 +14,6 @@ iteration 3000 for the surgical configs - which is exactly where a 2-GPU run die
 """
 import math
 
-import pytest
 from detectron2.engine import hooks
 
 from train_net import insert_collective_hooks

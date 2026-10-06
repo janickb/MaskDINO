@@ -5,6 +5,7 @@ trigger `import maskdino` (which registers datasets from absolute data paths).
 val_loss.py only imports torch/detectron2, so this is safe either way, but
 file-path loading keeps the pattern consistent with the rest of this suite.
 """
+import ast
 import importlib.util
 import os
 import sys
@@ -145,8 +146,8 @@ class _CountingLoader:
 
 
 def _hook_with(loader, gathered_lengths, monkeypatch):
-    from maskdino.solver import val_loss as val_loss_mod
-
+    # val_loss_mod is the file-path-loaded module from the top of this file; importing
+    # maskdino.solver.val_loss instead would pull in the maskdino package.
     hook = val_loss_mod.ValidationLossHook(period=1, loader=loader)
     monkeypatch.setattr(val_loss_mod.comm, "all_gather", lambda v: list(gathered_lengths))
     return hook
@@ -176,20 +177,50 @@ def test_loader_without_len_disables_truncation(monkeypatch):
         def __iter__(self):
             return iter([])
 
-    from maskdino.solver import val_loss as val_loss_mod
-
     hook = val_loss_mod.ValidationLossHook(period=1, loader=_NoLen())
     assert hook._steps_this_rank() is None
 
 
 def test_criterion_really_contains_a_collective():
     """If this ever stops being true the truncation above is no longer needed - but
-    while it holds, unequal batch counts across ranks are a hard deadlock."""
-    import inspect
+    while it holds, unequal batch counts across ranks are a hard deadlock.
 
-    from mask2former.modeling.criterion import SetCriterion as M2FCriterion
-    from maskdino.modeling.criterion import SetCriterion as DinoCriterion
+    Both arms are checked: ValidationLossHook is shared, so either architecture's
+    SetCriterion can mismatch the collectives.
 
-    for crit in (M2FCriterion, DinoCriterion):
-        src = inspect.getsource(crit.forward)
-        assert "all_reduce" in src, crit
+    Parsed from source rather than imported: both criterion modules use relative
+    imports and pull in their package internals, so reaching SetCriterion means
+    `import maskdino` / `import mask2former` - which registers datasets from absolute
+    data paths and is what this suite's file-path loading exists to avoid (see the
+    module docstring). Matched by name, not signature: maskdino's forward takes an
+    extra mask_dict argument.
+    """
+    for parts in (
+        ("maskdino", "modeling", "criterion.py"),
+        ("mask2former", "modeling", "criterion.py"),
+    ):
+        src = os.path.join(_HERE, "..", *parts)
+        with open(src) as fh:
+            tree = ast.parse(fh.read(), filename=src)
+
+        forward = next(
+            (
+                fn
+                for cls in tree.body
+                if isinstance(cls, ast.ClassDef) and cls.name == "SetCriterion"
+                for fn in cls.body
+                if isinstance(fn, ast.FunctionDef) and fn.name == "forward"
+            ),
+            None,
+        )
+        assert forward is not None, f"SetCriterion.forward not found in {src}"
+        calls = {
+            ast.unparse(node.func)
+            for node in ast.walk(forward)
+            if isinstance(node, ast.Call)
+        }
+        assert any("all_reduce" in c for c in calls), (
+            f"SetCriterion.forward in {src} no longer runs a collective, so "
+            "ValidationLossHook's per-rank truncation (_steps_this_rank) may no "
+            "longer be needed"
+        )

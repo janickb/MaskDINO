@@ -140,4 +140,8 @@ class ValidationLossHook(HookBase):
                 totals[k] = totals.get(k, 0.0) + v
         means = {k: v / total_n for k, v in totals.items()}
 
+        # The weighted total only, deliberately - no "val_<component>" scalar per loss
+        # component. The components are already written per-step on the training side,
+        # so the copies multiplied the TensorBoard series without adding a signal
+        # anyone reads. This is the note the module docstring points at.
         self.trainer.storage.put_scalar("validation_loss", sum(means.values()))
