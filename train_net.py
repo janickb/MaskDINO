@@ -84,6 +84,33 @@ from maskdino import (
 )
 
 
+def insert_collective_hooks(ret, val_loss_hook):
+    """Insert ValidationLossHook at a position that is the SAME on every rank.
+
+    Both ValidationLossHook and PlateauLRHook run a comm.all_gather in after_step, so
+    their relative order has to be identical across the DDP group - if rank 0 enters one
+    collective while rank 1 enters the other, the ranks mismatch and the job hangs until
+    the gloo timeout (30 min) and then dies.
+
+    The previous anchor was hooks.PeriodicWriter, which detectron2 adds ONLY on the main
+    process (DefaultTrainer.build_hooks). So rank 0 ended up with
+        [..., EvalHook, EvalHook, ValidationLossHook, PeriodicWriter, PlateauLRHook]
+    while every other rank got
+        [..., EvalHook, EvalHook, PlateauLRHook, ValidationLossHook]
+    - the two collective hooks in OPPOSITE order. They first fire on the same iteration
+    at lcm(TEST.EVAL_PERIOD, SOLVER.PLATEAU.CHECK_PERIOD); with the surgical configs'
+    1000 and 300 that is iteration 3000, which is exactly where multi-GPU runs died.
+
+    hooks.EvalHook is added unconditionally on every rank, so it is a safe anchor; the
+    caller appends PlateauLRHook afterwards, keeping it last everywhere.
+    """
+    last_eval = max(
+        (i for i, h in enumerate(ret) if isinstance(h, hooks.EvalHook)), default=-1
+    )
+    ret.insert(last_eval + 1 if last_eval >= 0 else len(ret), val_loss_hook)
+    return ret
+
+
 class Trainer(DefaultTrainer):
     """
     Extension of the Trainer class adapted to MaskFormer.
@@ -422,14 +449,6 @@ class Trainer(DefaultTrainer):
         does, just evaluated on DATASETS.TEST[0] - see maskdino/solver/val_loss.py.
         """
         ret = super().build_hooks()
-        if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
-            ret.append(
-                PlateauLRHook(
-                    self.scheduler,
-                    self.cfg.SOLVER.PLATEAU.METRIC,
-                    self.cfg.SOLVER.PLATEAU.CHECK_PERIOD,
-                )
-            )
 
         he = self.cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
         if he.ENABLED and he.PERIOD > 0 and he.PERIOD != self.cfg.TEST.EVAL_PERIOD:
@@ -462,11 +481,19 @@ class Trainer(DefaultTrainer):
 
         if self.cfg.MODEL.MaskDINO.TEST.VAL_LOSS.ENABLED:
             val_loader = self.build_val_loss_loader(self.cfg, self.cfg.DATASETS.TEST[0])
-            idx = next(
-                (i for i, h in enumerate(ret) if isinstance(h, hooks.PeriodicWriter)),
-                len(ret),
+            ret = insert_collective_hooks(
+                ret, ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader)
             )
-            ret.insert(idx, ValidationLossHook(self.cfg.TEST.EVAL_PERIOD, val_loader))
+
+        # PlateauLRHook LAST, on every rank - see insert_collective_hooks().
+        if self.cfg.SOLVER.LR_SCHEDULER_NAME == "ReduceLROnPlateau":
+            ret.append(
+                PlateauLRHook(
+                    self.scheduler,
+                    self.cfg.SOLVER.PLATEAU.METRIC,
+                    self.cfg.SOLVER.PLATEAU.CHECK_PERIOD,
+                )
+            )
 
         return ret
 
