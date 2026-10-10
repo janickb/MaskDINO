@@ -53,3 +53,4 @@ _darcs
 /models
 /snippet
 runs/*
+debug_vis/*
