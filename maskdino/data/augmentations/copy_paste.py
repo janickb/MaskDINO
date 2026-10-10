@@ -588,7 +588,7 @@ class CopyPasteCompositor:
           with the DataLoader WORKER INDEX, because a worker inherits this object by
           fork: without that, every worker would replay one identical augmentation
           sequence. The worker index - not the pid - because it is 0 in the main
-          process, which keeps tools/dump_training_samples.py reproducible across
+          process, which keeps tools/augmentation/dump_training_samples.py reproducible across
           invocations while still giving each worker its own stream.
         """
         worker = _worker_index()
