@@ -155,26 +155,28 @@ def _tilt_homography(cw, ch, tilt_deg, azimuth_rad, cam_distance_factor=2.5):
     """
     w, h = cw - 1.0, ch - 1.0
     corners = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
-    centered = np.column_stack([
-        corners[:, 0] - w / 2.0, corners[:, 1] - h / 2.0, np.zeros(4)
-    ])
+    centered = np.column_stack(
+        [corners[:, 0] - w / 2.0, corners[:, 1] - h / 2.0, np.zeros(4)]
+    )
 
     phi = np.deg2rad(tilt_deg)
     axis = np.array([np.cos(azimuth_rad), np.sin(azimuth_rad), 0.0])
     # Rodrigues' rotation of the plane about an in-plane axis.
-    K = np.array([[0.0, -axis[2], axis[1]],
-                  [axis[2], 0.0, -axis[0]],
-                  [-axis[1], axis[0], 0.0]])
+    K = np.array(
+        [[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]]
+    )
     R = np.eye(3) + np.sin(phi) * K + (1.0 - np.cos(phi)) * (K @ K)
     rotated = centered @ R.T
 
     distance = cam_distance_factor * max(w, h)
     denom = distance + rotated[:, 2]
     denom = np.where(np.abs(denom) < 1e-6, 1e-6, denom)
-    projected = np.column_stack([
-        distance * rotated[:, 0] / denom + w / 2.0,
-        distance * rotated[:, 1] / denom + h / 2.0,
-    ])
+    projected = np.column_stack(
+        [
+            distance * rotated[:, 0] / denom + w / 2.0,
+            distance * rotated[:, 1] / denom + h / 2.0,
+        ]
+    )
 
     def _area(q):
         x, y = q[:, 0], q[:, 1]
@@ -430,7 +432,9 @@ class CopyPasteCompositor:
         for idx in self._sample_instance_indices(k):
             crop, crop_mask, category_id = self._instance_cache[idx]
 
-            patch, patch_mask, valid_footprint = self._transform_instance(crop, crop_mask)
+            patch, patch_mask, valid_footprint = self._transform_instance(
+                crop, crop_mask
+            )
 
             if use_cluster and random.random() >= self.cluster_stray_fraction:
                 # Piled: Gaussian-around-center draw.
@@ -507,7 +511,11 @@ class CopyPasteCompositor:
         # crop is not softened twice, and the image/mask/footprint still go through
         # exactly one shared matrix (the invariant the big comment below is about).
         # When disabled, the original warpAffine path runs untouched.
-        matrix = self._perspective_matrix(cw, ch, rot_mat) if self.instance_perspective else None
+        matrix = (
+            self._perspective_matrix(cw, ch, rot_mat)
+            if self.instance_perspective
+            else None
+        )
         if matrix is not None:
             matrix, bound_w, bound_h = matrix
 
@@ -539,7 +547,9 @@ class CopyPasteCompositor:
 
         if interp == "nearest":
             patch = warp(crop, cv2.INTER_NEAREST)
-            patch_mask = warp(crop_mask.astype(np.uint8), cv2.INTER_NEAREST).astype(bool)
+            patch_mask = warp(crop_mask.astype(np.uint8), cv2.INTER_NEAREST).astype(
+                bool
+            )
         elif interp in _SUBPIXEL_INTERP_FLAGS:
             flag = _SUBPIXEL_INTERP_FLAGS[interp]
             patch = warp(crop, flag)
@@ -592,7 +602,7 @@ class CopyPasteCompositor:
         """(3x3 matrix, bound_w, bound_h) for a rotation composed with a centered,
         area-neutral projective warp - or None when this instance does not get one.
 
-        Unlike INPUT.PERSPECTIVE (whole-frame), this one is area-preserving: the
+        the
         frame-level version has to sample its quad inward to avoid empty corners and
         therefore always zooms in, but a crop can simply grow its canvas, and whatever
         lands outside the instrument's mask is never pasted anyway. Apparent size
@@ -612,9 +622,7 @@ class CopyPasteCompositor:
         azimuth = rng.uniform(0.0, 2.0 * np.pi)
         homography = _tilt_homography(cw, ch, tilt, azimuth)
 
-        corners = np.float32(
-            [[0, 0], [cw - 1, 0], [cw - 1, ch - 1], [0, ch - 1]]
-        )
+        corners = np.float32([[0, 0], [cw - 1, 0], [cw - 1, ch - 1], [0, ch - 1]])
 
         rot3 = np.vstack([rot_mat, [0.0, 0.0, 1.0]])
         matrix = homography @ rot3
@@ -628,9 +636,13 @@ class CopyPasteCompositor:
         dst = dst[:, :2] / np.where(np.abs(dst[:, 2:3]) < 1e-12, 1e-12, dst[:, 2:3])
         min_xy = dst.min(axis=0)
         max_xy = dst.max(axis=0)
-        shift = np.array([[1.0, 0.0, -min_xy[0] + 1.0],
-                          [0.0, 1.0, -min_xy[1] + 1.0],
-                          [0.0, 0.0, 1.0]])
+        shift = np.array(
+            [
+                [1.0, 0.0, -min_xy[0] + 1.0],
+                [0.0, 1.0, -min_xy[1] + 1.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
         bound_w = int(np.ceil(max_xy[0] - min_xy[0])) + 2
         bound_h = int(np.ceil(max_xy[1] - min_xy[1])) + 2
         return shift @ matrix, bound_w, bound_h
@@ -686,8 +698,9 @@ class CopyPasteCompositor:
         out = np.clip(out, 0, 255).astype(np.uint8)
 
         if j["hue_degrees"] > 0:
-            out = _shift_hue(out, rng.uniform(-j["hue_degrees"], j["hue_degrees"]),
-                             self.image_format)
+            out = _shift_hue(
+                out, rng.uniform(-j["hue_degrees"], j["hue_degrees"]), self.image_format
+            )
         lo, hi = j["blur_sigma"]
         if hi > 0:
             sigma = rng.uniform(lo, hi)
@@ -826,8 +839,12 @@ class CopyPasteCompositor:
         )
         padded_mask = cv2.copyMakeBorder(
             patch_mask.astype(np.uint8) * 255,
-            pad, pad, pad, pad,
-            cv2.BORDER_CONSTANT, value=0,
+            pad,
+            pad,
+            pad,
+            pad,
+            cv2.BORDER_CONSTANT,
+            value=0,
         )
         ph, pw = padded_mask.shape[:2]
         cy, cx = py + patch_mask.shape[0] // 2, px + patch_mask.shape[1] // 2

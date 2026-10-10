@@ -5,6 +5,7 @@ don't trigger ``import maskdino`` (which registers datasets from absolute data
 paths). It has no maskdino-internal imports of its own, so this is purely to stay
 consistent with the rest of the test suite.
 """
+
 import importlib.util
 import os
 import random
@@ -17,7 +18,9 @@ import pytest
 from pycocotools import mask as mask_util
 
 _HERE = os.path.dirname(__file__)
-_MOD_PATH = os.path.join(_HERE, "..", "maskdino", "data", "augmentations", "copy_paste.py")
+_MOD_PATH = os.path.join(
+    _HERE, "..", "maskdino", "data", "augmentations", "copy_paste.py"
+)
 _spec = importlib.util.spec_from_file_location("copy_paste", _MOD_PATH)
 cp_mod = importlib.util.module_from_spec(_spec)
 sys.modules["copy_paste"] = cp_mod
@@ -215,8 +218,12 @@ def test_cluster_prob_one_concentrates_placements_near_center(compositor_factory
     # sigma of the group's own mean centroid (the true center isn't directly
     # observable from the public API, so we check mutual concentration).
     compositor, _ = compositor_factory(
-        n_sources=6, min_instances=6, max_instances=6,
-        cluster_prob=1.0, cluster_radius_fraction=0.15, cluster_stray_fraction=0.0,
+        n_sources=6,
+        min_instances=6,
+        max_instances=6,
+        cluster_prob=1.0,
+        cluster_radius_fraction=0.15,
+        cluster_stray_fraction=0.0,
     )
     dest = _solid_image(200, 0)
 
@@ -242,8 +249,12 @@ def test_cluster_center_moves_across_calls(compositor_factory):
     # a small std relative to a large canvas) produce different pile
     # locations.
     compositor, _ = compositor_factory(
-        n_sources=4, min_instances=4, max_instances=4,
-        cluster_prob=1.0, cluster_radius_fraction=0.1, cluster_stray_fraction=0.0,
+        n_sources=4,
+        min_instances=4,
+        max_instances=4,
+        cluster_prob=1.0,
+        cluster_radius_fraction=0.1,
+        cluster_stray_fraction=0.0,
     )
     dest = _solid_image(256, 0)
 
@@ -267,8 +278,11 @@ def test_cluster_stray_fraction_one_behaves_like_uniform(compositor_factory):
     # the stray (old uniform) branch despite the frame being "clustered",
     # i.e. functionally equivalent to the plain uniform path.
     compositor, _ = compositor_factory(
-        n_sources=5, min_instances=3, max_instances=3,
-        cluster_prob=1.0, cluster_stray_fraction=1.0,
+        n_sources=5,
+        min_instances=3,
+        max_instances=3,
+        cluster_prob=1.0,
+        cluster_stray_fraction=1.0,
     )
     dest = _solid_image(64, 0)
 
@@ -283,9 +297,7 @@ def test_place_clustered_clamps_instead_of_rejecting(compositor_factory):
     # guarantee for the clustered path.
     compositor, _ = compositor_factory()
     patch_mask = _l_shape(size=24)
-    placement = compositor._place(
-        patch_mask, 64, 64, center=(0.0, 0.0), std=(0.0, 0.0)
-    )
+    placement = compositor._place(patch_mask, 64, 64, center=(0.0, 0.0), std=(0.0, 0.0))
     assert placement is not None
     py, px, full_mask = placement
     assert 0 <= py <= 64 - 24
@@ -320,7 +332,9 @@ def test_transform_uses_consistent_interpolation(compositor_factory):
 
     random.seed(6)
     for _ in range(40):
-        patch, patch_mask, _valid = compositor._transform_instance(original_image, original_mask)
+        patch, patch_mask, _valid = compositor._transform_instance(
+            original_image, original_mask
+        )
         assert set(np.unique(patch).tolist()) <= allowed_values
         assert set(np.unique(patch[patch_mask]).tolist()) <= {200}
 
@@ -370,7 +384,9 @@ def test_blend_never_bleeds_border_fill(compositor_factory):
 
     random.seed(11)
     for _ in range(20):
-        patch, patch_mask, valid_footprint = compositor._transform_instance(crop, thin_mask)
+        patch, patch_mask, valid_footprint = compositor._transform_instance(
+            crop, thin_mask
+        )
         ph, pw = patch_mask.shape[:2]
         composite = _solid_image(ph + pw + 100, dest_value)
         py, px = 50, 50
@@ -576,8 +592,13 @@ def test_normalize_jitter_treats_identity_config_as_off():
     assert cp_mod._normalize_jitter({}) is None
     assert (
         cp_mod._normalize_jitter(
-            {"brightness": (1.0, 1.0), "contrast": (1.0, 1.0),
-             "saturation": (1.0, 1.0), "hue_degrees": 0.0, "blur_sigma": (0.0, 0.0)}
+            {
+                "brightness": (1.0, 1.0),
+                "contrast": (1.0, 1.0),
+                "saturation": (1.0, 1.0),
+                "hue_degrees": 0.0,
+                "blur_sigma": (0.0, 0.0),
+            }
         )
         is None
     )
@@ -617,7 +638,9 @@ def test_jitter_off_is_bit_identical(compositor_factory):
     out_noop, anns_noop = explicit_noop(_solid_image(64, 0), [])
 
     assert np.array_equal(out_plain, out_noop)
-    assert [a["segmentation"] for a in anns_plain] == [a["segmentation"] for a in anns_noop]
+    assert [a["segmentation"] for a in anns_plain] == [
+        a["segmentation"] for a in anns_noop
+    ]
 
 
 def test_jitter_changes_pixels_but_not_geometry(compositor_factory):
@@ -684,7 +707,10 @@ def test_normalize_perspective_off_unless_both_knobs_set():
     assert cp_mod._normalize_perspective(None) is None
     assert cp_mod._normalize_perspective({"prob": 0.0, "tilt_degrees": 15.0}) is None
     assert cp_mod._normalize_perspective({"prob": 1.0, "tilt_degrees": 0.0}) is None
-    assert cp_mod._normalize_perspective({"prob": 0.5, "tilt_degrees": 15.0}) == (0.5, 15.0)
+    assert cp_mod._normalize_perspective({"prob": 0.5, "tilt_degrees": 15.0}) == (
+        0.5,
+        15.0,
+    )
 
 
 def test_default_config_leaves_instance_perspective_off():
@@ -707,7 +733,9 @@ def test_perspective_off_is_bit_identical(compositor_factory):
     out_off, anns_off = explicit_off(_solid_image(64, 0), [])
 
     assert np.array_equal(out_plain, out_off)
-    assert [a["segmentation"] for a in anns_plain] == [a["segmentation"] for a in anns_off]
+    assert [a["segmentation"] for a in anns_plain] == [
+        a["segmentation"] for a in anns_off
+    ]
 
 
 def test_perspective_changes_the_pasted_shape(compositor_factory):
@@ -741,8 +769,7 @@ def test_perspective_keeps_mask_on_the_pasted_pixels(compositor_factory):
 
 
 def test_perspective_is_area_neutral_on_average(compositor_factory):
-    # The frame-level INPUT.PERSPECTIVE has to sample its quad inward and so always
-    # zooms IN (~5% linear at 0.05). The per-instance version expands its canvas and
+    # This per-instance version expands its canvas and
     # rescales the tilted quad back to the source area, so it must not systematically
     # grow or shrink instruments - apparent size is a class cue here.
     areas_plain, areas_warped = [], []
@@ -777,7 +804,9 @@ def test_perspective_does_not_shift_placement_draws(compositor_factory):
 
     assert len(anns_plain) == len(anns_warp)
     # Same instruments, in the same order, at roughly the same spots.
-    assert [a["category_id"] for a in anns_plain] == [a["category_id"] for a in anns_warp]
+    assert [a["category_id"] for a in anns_plain] == [
+        a["category_id"] for a in anns_warp
+    ]
 
 
 def test_tilt_is_sampled_uniformly_in_angle():
@@ -809,3 +838,70 @@ def test_tilt_homography_is_area_preserving():
 def test_zero_tilt_is_the_identity():
     h = cp_mod._tilt_homography(100, 80, 0.0, 1.3)
     assert np.allclose(h / h[2, 2], np.eye(3), atol=1e-6)
+
+
+def test_contrast_pivots_on_instrument_not_patch_background():
+    """Contrast must pivot on the instrument's own pixels, not the whole patch.
+
+    The patch rect also holds the crop's mat background, which sits well below the
+    instrument. Pivoting there puts every instrument pixel above the pivot, so
+    raising contrast brightens the instrument and fights the brightness knob
+    (measured on real crops: at brightness 0.70, contrast 1.0 -> 2.6 moved the tool
+    mean 114.8 -> 183.8). It also makes a given contrast value mean different things
+    for different instrument shapes, since the pivot drifts with how much background
+    the bounding box contains.
+    """
+
+    patch = np.zeros((40, 40, 3), np.uint8)
+    patch[:] = 40  # dark "mat" background
+    mask = np.zeros((40, 40), bool)
+    mask[10:30, 10:30] = True
+    patch[mask] = 160  # bright "instrument"
+
+    comp = CopyPasteCompositor.__new__(CopyPasteCompositor)
+    comp.image_format = "BGR"
+    comp._rng_base = 7
+    comp._rng_worker = None
+    comp.instance_jitter = {
+        "brightness": (1.0, 1.0),
+        "contrast": (2.0, 2.0),
+        "saturation": (1.0, 1.0),
+        "hue_degrees": 0.0,
+        "blur_sigma": (0.0, 0.0),
+    }
+
+    before = patch[mask].mean()
+    after = comp._jitter_appearance(patch, mask)[mask].mean()
+    # Pivoting on the instrument mean leaves that mean where it was; only the
+    # spread around it changes.
+    assert abs(after - before) < 3.0
+
+    # ...and without a mask it must fall back to the old whole-patch pivot rather
+    # than crashing, which is what a caller with an empty mask would hit.
+    comp._rng_worker = None
+    fallback = comp._jitter_appearance(patch, None)[mask].mean()
+    assert fallback > before + 10
+
+
+def test_contrast_still_changes_internal_spread():
+    # Decoupling must not mean "contrast does nothing": it should still scale the
+    # instrument's internal texture, which is the statistic being matched to real.
+    patch = np.full((40, 40, 3), 40, np.uint8)
+    mask = np.zeros((40, 40), bool)
+    mask[10:30, 10:30] = True
+    rng = np.random.default_rng(0)
+    patch[mask] = rng.integers(120, 200, size=(mask.sum(), 3), dtype=np.uint8)
+
+    comp = CopyPasteCompositor.__new__(CopyPasteCompositor)
+    comp.image_format = "BGR"
+    comp._rng_base = 7
+    comp._rng_worker = None
+    comp.instance_jitter = {
+        "brightness": (1.0, 1.0),
+        "contrast": (1.8, 1.8),
+        "saturation": (1.0, 1.0),
+        "hue_degrees": 0.0,
+        "blur_sigma": (0.0, 0.0),
+    }
+    out = comp._jitter_appearance(patch, mask)
+    assert out[mask].std() > patch[mask].std() * 1.4
