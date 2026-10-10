@@ -1,0 +1,53 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+# --- Appearance-dose sweep, side arm: PERSPECTIVE ----------------------------
+# Deliberately NOT part of the mild/control/strong/extreme ladder. Its photometric
+# dose is identical to the control arm, so the ONLY difference from control is the
+# projective warp - a win here is attributable to perspective alone, which a copy
+# folded into the strong arm could not tell you.
+#
+# Motivation: every synthetic render comes from one fixed overhead camera, so the
+# training set contains no foreshortening at all, while the real val photos do.
+# No in-plane rotation or photometric axis can close that gap.
+#
+# The warp is PER-INSTANCE (INPUT.COPY_PASTE.PERSPECTIVE). A whole-frame alternative
+# existed and was removed, for the reasons that make the per-instance one the right
+# choice here:
+#   - a real pile is not planar. Instruments resting on each other are each
+#     foreshortened differently, which one global homography cannot express - it can
+#     only say "this whole flat scene is viewed off-axis".
+#   - it is area-neutral (measured mean area ratio 1.009 at 0.05, spread 0.91-1.11),
+#     where the frame-level version had to sample its quad inward to avoid empty
+#     corners and therefore always zoomed IN (~1.108 in area). Apparent size is a
+#     class cue in this dataset, so a systematic zoom is a real cost.
+#   - with ~10 pastes per frame it applies ~10 independent warps instead of 1, and
+#     deforms the same cached source crop differently each time it appears - which
+#     is the geometric counterpart of the per-instance appearance jitter, against
+#     the ~2-distinct-appearances-per-class problem.
+#
+# 0.05 is moderate on purpose: a clear off-axis tilt, not a funhouse warp.
+INPUT:
+  PHOTOMETRIC:
+    BRIGHTNESS: [0.7, 1.3]
+    CONTRAST: [0.7, 1.3]
+    SATURATION: [0.8, 1.2]
+    LIGHTING: 0.9
+  COPY_PASTE:
+    PERSPECTIVE:
+      # PROB 1.0, matching how rotation behaves: per-instance rotation has no gate
+      # at all (theta ~ U(-30,+30) on every pasted crop), and corner offsets here are
+      # likewise drawn symmetrically from U(-d,+d), so near-zero warps already occur
+      # naturally. A 0.5 gate would not add variety - it would just put half the
+      # instances at exactly zero, making the distribution bimodal where rotation's
+      # is continuous. Clean, unwarped examples are not lost either: the destination
+      # frame's own instrument is never passed through _transform_instance, so every
+      # frame still contains exactly one pristine tool.
+      PROB: 1.0
+      # Max out-of-plane viewing angle. The tilt is drawn UNIFORMLY from [0, this]
+      # with a uniformly random azimuth - the same way ROTATION_DEGREES is uniform
+      # in angle. The earlier per-corner-offset parameterization was uniform in
+      # corner displacement but bell-shaped in foreshortening (8 independent
+      # uniforms -> central limit), so strong viewpoints were rare however the knob
+      # was set. 18 deg matches that scheme's median foreshortening (1.057 vs 1.064)
+      # while actually reaching the strong end instead of leaving it in a 1% tail.
+      TILT_DEGREES: 18.0
+OUTPUT_DIR: "runs/aug_perspective"

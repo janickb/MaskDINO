@@ -1,0 +1,16 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_control.yaml
+# --- ABLATION 1: per-instance jitter ONLY ------------------------------------
+# control's photometric settings, unchanged, plus realism's per-instance jitter.
+# Asks: is the per-instance jitter SUFFICIENT to reproduce the realism gain?
+# If this lands near 0.90, the other three axes (narrowed per-image ranges,
+# widened saturation, blur+noise) contribute nothing and the bundle collapses
+# to one change.
+INPUT:
+  COPY_PASTE:
+    INSTANCE_JITTER:
+      BRIGHTNESS:  [0.72, 0.88]   # centre 0.80, calibrated to real tool pixels
+      CONTRAST:    [1.50, 1.90]   # centre 1.70
+      SATURATION:  [0.9, 1.3]
+      HUE_DEGREES: 4.0
+      BLUR_SIGMA:  [0.0, 0.5]
+OUTPUT_DIR: "runs/abl_jitteronly"

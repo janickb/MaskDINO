@@ -1,0 +1,44 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+# --- Phase-2 REALISM arm -----------------------------------------------------
+# Not a dose level. Every value below is set from a measurement against
+# `reclass_set_home` (real tool photos, a TRAINING split - never from val, which
+# has to stay an honest generalization estimate).
+#
+# The mild/control/strong/extreme ladder was phase-1 thinking: wide randomization
+# to generalize to an unknown target. Phase 2 fine-tunes onto one known real
+# domain, so the ranges bracket measured real variation instead.
+#
+#   measurement                      real            synthetic   -> setting
+#   instrument brightness            130.6           154.3       -> per-instance 0.80
+#   instrument internal std           53.7            43.2       -> per-instance contrast 1.70
+#   background noise std               2.00 / 1.36     0.93      -> NOISE_STD [0.5, 2.0]
+#   instrument sharpness             191 / 165       198         -> BLUR_SIGMA [0.0, 0.6]
+#   frame brightness between sessions  ~30% spread                -> per-image [0.85, 1.15]
+#
+# The per-instance brightness/contrast centres come from a calibration that runs
+# the real _jitter_appearance over 250 cached source crops and solves for the
+# values that land the tool-pixel mean/std on the real-train target: 0.80 / 1.70
+# gives mean 131.5 (target 130.6) and std 53.3 (target 53.7).
+#
+# NOTE this calibration is only valid with the instrument-pixel contrast pivot
+# (see CopyPasteCompositor._jitter_appearance). With the old whole-patch pivot the
+# two knobs were coupled and no setting reached the target.
+INPUT:
+  PHOTOMETRIC:
+    BRIGHTNESS: [0.85, 1.15]   # between-session variation is ~30%; nothing wider
+    CONTRAST:   [0.85, 1.15]
+    SATURATION: [0.8, 1.5]     # 3.4x between real sessions - widest real axis
+    LIGHTING:   0.3
+    BLUR_PROB:  0.3
+    BLUR_SIGMA: [0.0, 0.6]     # renders are SHARPER than real; light defocus only
+    NOISE_PROB: 0.5
+    NOISE_STD:  [0.5, 2.0]     # renders are cleaner than both real sets
+    GRAYSCALE_PROB: 0.0        # occurs nowhere in the real data
+  COPY_PASTE:
+    INSTANCE_JITTER:
+      BRIGHTNESS:  [0.72, 0.88]  # centre 0.80, calibrated
+      CONTRAST:    [1.50, 1.90]  # centre 1.70, calibrated
+      SATURATION:  [0.9, 1.3]
+      HUE_DEGREES: 4.0           # white-balance drift between sessions
+      BLUR_SIGMA:  [0.0, 0.5]
+OUTPUT_DIR: "runs/aug_realism"

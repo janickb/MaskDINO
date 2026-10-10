@@ -1,0 +1,15 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_realism.yaml
+# --- ABLATION 2: realism MINUS per-instance jitter ---------------------------
+# Everything realism does at the frame level (narrowed brightness/contrast,
+# widened saturation, blur, noise) but with per-instance jitter switched back
+# off. Asks: is the per-instance jitter NECESSARY?
+# If this lands near control (0.877), the frame-level changes do nothing alone.
+INPUT:
+  COPY_PASTE:
+    INSTANCE_JITTER:
+      BRIGHTNESS:  [1.0, 1.0]
+      CONTRAST:    [1.0, 1.0]
+      SATURATION:  [1.0, 1.0]
+      HUE_DEGREES: 0.0
+      BLUR_SIGMA:  [0.0, 0.0]
+OUTPUT_DIR: "runs/abl_nojitter"

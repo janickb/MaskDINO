@@ -28,11 +28,13 @@ MODEL:
       HUNGARIAN_EVAL:
         PERIOD: 2000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
 SOLVER:
-  IMS_PER_BATCH: 6
+  IMS_PER_BATCH: 2
   BASE_LR: 0.00001
-
+DATASETS:
+  TRAIN: ("reclass_setab_mm",)
+  TEST: ("val_setab_mm",)
 TEST:
   # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
   # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
   EVAL_PERIOD: 1000                   # watch for decoder drift / overfit early
-OUTPUT_DIR: "runs/reclassify_unfreeze_encoder_decoder_fullValSet_v2_pile_augmentation_no_finetune"
+OUTPUT_DIR: "runs/reclassify_v1_sim_no_additional_clamp"
