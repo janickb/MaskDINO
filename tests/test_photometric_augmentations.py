@@ -64,25 +64,33 @@ def test_defaults_reproduce_the_previously_hardcoded_augs(cfg):
 
 def test_new_axes_are_off_by_default(cfg):
     names = [type(a).__name__ for a in ph.build_photometric_augmentations(cfg)]
-    assert "RandomGaussianBlur" not in names
     assert "RandomGaussianNoise" not in names
     assert "RandomGrayscale" not in names
 
 
 def test_new_axes_are_appended_when_enabled(cfg):
-    cfg.INPUT.PHOTOMETRIC.BLUR_PROB = 0.3
-    cfg.INPUT.PHOTOMETRIC.BLUR_SIGMA = [0.5, 1.2]
     cfg.INPUT.PHOTOMETRIC.NOISE_PROB = 0.3
     cfg.INPUT.PHOTOMETRIC.NOISE_STD = [2.0, 6.0]
     cfg.INPUT.PHOTOMETRIC.GRAYSCALE_PROB = 0.05
     names = [type(a).__name__ for a in ph.build_photometric_augmentations(cfg)]
-    assert names[4:] == ["RandomGaussianBlur", "RandomGaussianNoise", "RandomGrayscale"]
+    assert names[4:] == ["RandomGaussianNoise", "RandomGrayscale"]
+
+
+def test_there_is_no_global_blur_axis(cfg):
+    # Removed deliberately (see build_photometric_augmentations): a global blur only
+    # ever closed a synthetic-vs-real sharpness gap, which phase-2's real training
+    # source closes by construction. Per-instance defocus lives in COPY_PASTE's
+    # INSTANCE_JITTER.BLUR_SIGMA instead. Pin both halves so neither comes back by
+    # accident nor disappears unnoticed.
+    assert not hasattr(ph, "RandomGaussianBlur")
+    assert "BLUR_PROB" not in cfg.INPUT.PHOTOMETRIC
+    assert "BLUR_SIGMA" not in cfg.INPUT.PHOTOMETRIC
+    assert cfg.INPUT.COPY_PASTE.INSTANCE_JITTER.BLUR_SIGMA == [0.0, 0.0]
 
 
 @pytest.mark.parametrize(
     "aug",
     [
-        ph.RandomGaussianBlur((1.0, 1.0)),
         ph.RandomGaussianNoise((5.0, 5.0)),
         ph.RandomGrayscale("RGB"),
     ],
@@ -101,7 +109,6 @@ def test_transforms_never_touch_geometry(aug):
 @pytest.mark.parametrize(
     "aug",
     [
-        ph.RandomGaussianBlur((1.0, 1.0)),
         ph.RandomGaussianNoise((5.0, 5.0)),
         ph.RandomGrayscale("RGB"),
     ],
@@ -117,7 +124,6 @@ def test_transforms_change_pixels_and_preserve_shape_and_dtype(aug):
 def test_zero_probability_is_a_no_op():
     img = _image()
     for aug in (
-        ph.RandomGaussianBlur((1.0, 2.0), prob=0.0),
         ph.RandomGaussianNoise((5.0, 9.0), prob=0.0),
         ph.RandomGrayscale("RGB", prob=0.0),
     ):
@@ -126,7 +132,6 @@ def test_zero_probability_is_a_no_op():
 
 def test_zero_magnitude_is_a_no_op():
     img = _image()
-    assert isinstance(ph.RandomGaussianBlur((0.0, 0.0)).get_transform(img), NoOpTransform)
     assert isinstance(ph.RandomGaussianNoise((0.0, 0.0)).get_transform(img), NoOpTransform)
 
 

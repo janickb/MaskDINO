@@ -241,10 +241,8 @@ def add_maskdino_config(cfg):
     cfg.INPUT.PHOTOMETRIC.CONTRAST = [0.7, 1.3]
     cfg.INPUT.PHOTOMETRIC.SATURATION = [0.8, 1.2]
     cfg.INPUT.PHOTOMETRIC.LIGHTING = 0.9  # T.RandomLighting scale (PCA lighting noise)
-    # The three axes below are new and OFF by default (prob 0 -> not even appended),
+    # The two axes below are new and OFF by default (prob 0 -> not even appended),
     # so turning them on is always an explicit, per-arm decision.
-    cfg.INPUT.PHOTOMETRIC.BLUR_PROB = 0.0
-    cfg.INPUT.PHOTOMETRIC.BLUR_SIGMA = [0.0, 0.0]  # px, cv2.GaussianBlur sigma
     cfg.INPUT.PHOTOMETRIC.NOISE_PROB = 0.0
     cfg.INPUT.PHOTOMETRIC.NOISE_STD = [0.0, 0.0]  # uint8 units
     cfg.INPUT.PHOTOMETRIC.GRAYSCALE_PROB = 0.0

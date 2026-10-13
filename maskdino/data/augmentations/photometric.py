@@ -12,20 +12,18 @@
 # real photographs, so what training lacks is lighting/finish variety, not geometry.
 # How hard to push that is an empirical question, hence arms.
 #
-# The three added axes (blur, sensor noise, grayscale) are all strictly photometric,
+# The two added axes (sensor noise, grayscale) are both strictly photometric,
 # so each is wrapped in detectron2's ColorTransform, whose apply_coords and
 # apply_segmentation are already identity. That is deliberate: it makes it
 # impossible for these to desync the image from its masks the way a geometric
 # transform can (see the FixedSizeCrop seg_pad_value note in
 # coco_instance_new_baseline_dataset_mapper.build_transform_gen).
 # ------------------------------------------------------------------------
-import cv2
 import numpy as np
 from detectron2.data import transforms as T
 from fvcore.transforms.transform import NoOpTransform
 
 __all__ = [
-    "RandomGaussianBlur",
     "RandomGaussianNoise",
     "RandomGrayscale",
     "build_photometric_augmentations",
@@ -39,33 +37,11 @@ def _luma_weights(image_format):
     return _LUMA_RGB if image_format != "BGR" else _LUMA_RGB[::-1]
 
 
-class RandomGaussianBlur(T.Augmentation):
-    """Defocus/motion softness, sigma ~ U(sigma_range) in pixels, applied with
-    probability `prob`. The probability lives here rather than in a wrapping
-    T.RandomApply so that the augmentation list the mapper logs at startup names
-    its own parameters - an arm's log has to be auditable after the fact."""
-
-    def __init__(self, sigma_range, prob=1.0):
-        super().__init__()
-        self.sigma_range = tuple(float(s) for s in sigma_range)
-        self.prob = float(prob)
-
-    def get_transform(self, image):
-        if np.random.rand() >= self.prob:
-            return NoOpTransform()
-        sigma = np.random.uniform(*self.sigma_range)
-        if sigma <= 0:
-            return NoOpTransform()
-        return T.ColorTransform(
-            lambda img, s=float(sigma): cv2.GaussianBlur(img, (0, 0), sigmaX=s, sigmaY=s)
-        )
-
-    def __repr__(self):
-        return f"RandomGaussianBlur(sigma_range={self.sigma_range}, prob={self.prob})"
-
-
 class RandomGaussianNoise(T.Augmentation):
-    """Additive per-pixel sensor noise, std ~ U(std_range) in uint8 units."""
+    """Additive per-pixel sensor noise, std ~ U(std_range) in uint8 units. The
+    probability lives here rather than in a wrapping T.RandomApply so that the
+    augmentation list the mapper logs at startup names its own parameters - an arm's
+    log has to be auditable after the fact."""
 
     def __init__(self, std_range, prob=1.0):
         super().__init__()
@@ -122,9 +98,20 @@ def build_photometric_augmentations(cfg):
     """The photometric tail of build_transform_gen, from cfg.INPUT.PHOTOMETRIC.
 
     The four classic augs are always appended (even at a no-op range) so that the
-    default config is RNG-identical to the hardcoded version it replaced. The three
+    default config is RNG-identical to the hardcoded version it replaced. The two
     new axes are appended only when their probability is > 0, so an arm that does
     not use them consumes no draws for them either.
+
+    There is deliberately no global blur axis. It existed to close a measured
+    synthetic-vs-real sharpness gap (renders 198 vs real 191/165, see the realism
+    arm's header), but phase-2 trains on real photographs, whose camera defocus is
+    already in the data - and the residual real-session-to-real-session spread only
+    justifies sigma <= ~0.3, which is numerically a no-op anyway (at sigma 0.3
+    cv2's derived 3x3 kernel keeps weight 0.985 on the centre pixel, so the uint8
+    result is unchanged). Per-instance defocus survives as
+    INPUT.COPY_PASTE.INSTANCE_JITTER.BLUR_SIGMA, which exists for a different
+    reason: pasted crops are softened by their own rotation/resampling, and that
+    mismatch is independent of how the source frames were produced.
     """
     p = cfg.INPUT.PHOTOMETRIC
     augs = [
@@ -133,8 +120,6 @@ def build_photometric_augmentations(cfg):
         T.RandomSaturation(*p.SATURATION),
         T.RandomLighting(p.LIGHTING),
     ]
-    if p.BLUR_PROB > 0:
-        augs.append(RandomGaussianBlur(p.BLUR_SIGMA, prob=p.BLUR_PROB))
     if p.NOISE_PROB > 0:
         augs.append(RandomGaussianNoise(p.NOISE_STD, prob=p.NOISE_PROB))
     if p.GRAYSCALE_PROB > 0:

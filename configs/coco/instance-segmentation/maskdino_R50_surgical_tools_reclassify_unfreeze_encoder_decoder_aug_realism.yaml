@@ -12,7 +12,7 @@ _BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
 #   instrument brightness            130.6           154.3       -> per-instance 0.80
 #   instrument internal std           53.7            43.2       -> per-instance contrast 1.70
 #   background noise std               2.00 / 1.36     0.93      -> NOISE_STD [0.5, 2.0]
-#   instrument sharpness             191 / 165       198         -> BLUR_SIGMA [0.0, 0.6]
+#   instrument sharpness             191 / 165       198         -> (see NOTE below)
 #   frame brightness between sessions  ~30% spread                -> per-image [0.85, 1.15]
 #
 # The per-instance brightness/contrast centres come from a calibration that runs
@@ -23,14 +23,21 @@ _BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
 # NOTE this calibration is only valid with the instrument-pixel contrast pivot
 # (see CopyPasteCompositor._jitter_appearance). With the old whole-patch pivot the
 # two knobs were coupled and no setting reached the target.
+#
+# NOTE the global blur axis this arm used to carry (BLUR_PROB 0.3, BLUR_SIGMA
+# [0.0, 0.6], from the sharpness row above) no longer exists - see
+# build_photometric_augmentations. The sharpness measurement still stands for a
+# SYNTHETIC source, so this arm no longer closes that gap frame-wide; the pasted
+# instruments - which is where the 198 was measured - still get per-instance
+# defocus from INSTANCE_JITTER.BLUR_SIGMA [0.0, 0.5] below, while the destination
+# frame's own instrument and the background do not. Phase-2 training on real
+# photographs makes the gap moot, which is why it was dropped rather than moved.
 INPUT:
   PHOTOMETRIC:
     BRIGHTNESS: [0.85, 1.15]   # between-session variation is ~30%; nothing wider
     CONTRAST:   [0.85, 1.15]
     SATURATION: [0.8, 1.5]     # 3.4x between real sessions - widest real axis
     LIGHTING:   0.3
-    BLUR_PROB:  0.3
-    BLUR_SIGMA: [0.0, 0.6]     # renders are SHARPER than real; light defocus only
     NOISE_PROB: 0.5
     NOISE_STD:  [0.5, 2.0]     # renders are cleaner than both real sets
     GRAYSCALE_PROB: 0.0        # occurs nowhere in the real data
