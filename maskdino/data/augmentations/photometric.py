@@ -2,10 +2,9 @@
 # Photometric augmentation for the reclassify phase.
 #
 # build_photometric_augmentations is the config-driven replacement for the four
-# hardcoded augs that used to sit at the tail of build_transform_gen. Its defaults
-# (maskdino/config.py, INPUT.PHOTOMETRIC) reproduce those four exactly - same
-# augs, same order, same RNG draws - so a config that sets nothing trains the
-# pipeline it trained before.
+# hardcoded augs that used to sit at the tail of build_transform_gen. Three of
+# those four survive here (brightness, contrast, saturation) with their original
+# defaults and order; T.RandomLighting was dropped - see below.
 #
 # The point of making it configurable is the appearance-dose A/B: phase-2 trains
 # on ~2 effective appearances per class (the side-A/B renders) and is evaluated on
@@ -97,10 +96,23 @@ def _to_gray(img, weights):
 def build_photometric_augmentations(cfg):
     """The photometric tail of build_transform_gen, from cfg.INPUT.PHOTOMETRIC.
 
-    The four classic augs are always appended (even at a no-op range) so that the
-    default config is RNG-identical to the hardcoded version it replaced. The two
-    new axes are appended only when their probability is > 0, so an arm that does
-    not use them consumes no draws for them either.
+    The three classic blends are always appended (even at a no-op range), so an
+    arm that wants them off can say [1.0, 1.0] and still get a true identity. The
+    two new axes are appended only when their probability is > 0, so an arm that
+    does not use them consumes no draws for them either.
+
+    There is deliberately no PCA-lighting axis. detectron2's T.RandomLighting adds
+    AlexNet/ImageNet PCA offsets whose eigenvalues are fitted for [0, 1]-ranged
+    images, but BlendTransform applies them to uint8 data: at the old default
+    scale 0.9 the per-channel offset std is 0.11 GRAY LEVELS, and since
+    clip+astype(uint8) truncates toward zero, only the offset's sign survived.
+    Measured, it did exactly one thing per frame - 47% of frames got every channel
+    darkened by 1 level, 46% were untouched, 7% mixed - with mean -0.5 levels, i.e.
+    a 0.2% systematic train-vs-eval brightness bias and no illumination variety at
+    all. scale 0.9 and 0.3 were indistinguishable, so every arm of the 2026-10
+    sweep ran the same inert constant. If frame-level colour drift is ever wanted,
+    add a hue-degrees knob (see _shift_hue in copy_paste.py) rather than reviving
+    this one.
 
     There is deliberately no global blur axis. It existed to close a measured
     synthetic-vs-real sharpness gap (renders 198 vs real 191/165, see the realism
@@ -118,7 +130,6 @@ def build_photometric_augmentations(cfg):
         T.RandomBrightness(*p.BRIGHTNESS),
         T.RandomContrast(*p.CONTRAST),
         T.RandomSaturation(*p.SATURATION),
-        T.RandomLighting(p.LIGHTING),
     ]
     if p.NOISE_PROB > 0:
         augs.append(RandomGaussianNoise(p.NOISE_STD, prob=p.NOISE_PROB))

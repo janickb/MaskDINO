@@ -53,13 +53,22 @@ def _image(h=16, w=20):
 def test_defaults_reproduce_the_previously_hardcoded_augs(cfg):
     augs = ph.build_photometric_augmentations(cfg)
     assert [type(a).__name__ for a in augs] == [
-        "RandomBrightness", "RandomContrast", "RandomSaturation", "RandomLighting",
+        "RandomBrightness", "RandomContrast", "RandomSaturation",
     ]
-    brightness, contrast, saturation, lighting = augs
+    brightness, contrast, saturation = augs
     assert (brightness.intensity_min, brightness.intensity_max) == (0.7, 1.3)
     assert (contrast.intensity_min, contrast.intensity_max) == (0.7, 1.3)
     assert (saturation.intensity_min, saturation.intensity_max) == (0.8, 1.2)
-    assert lighting.scale == 0.9
+
+
+def test_there_is_no_pca_lighting_axis(cfg):
+    # Removed deliberately (see build_photometric_augmentations): detectron2's
+    # RandomLighting applies [0,1]-calibrated ImageNet PCA offsets to uint8 data,
+    # so at any scale it only ever darkened a channel by 1 level or left it alone.
+    assert "RandomLighting" not in [
+        type(a).__name__ for a in ph.build_photometric_augmentations(cfg)
+    ]
+    assert "LIGHTING" not in cfg.INPUT.PHOTOMETRIC
 
 
 def test_new_axes_are_off_by_default(cfg):
@@ -73,7 +82,7 @@ def test_new_axes_are_appended_when_enabled(cfg):
     cfg.INPUT.PHOTOMETRIC.NOISE_STD = [2.0, 6.0]
     cfg.INPUT.PHOTOMETRIC.GRAYSCALE_PROB = 0.05
     names = [type(a).__name__ for a in ph.build_photometric_augmentations(cfg)]
-    assert names[4:] == ["RandomGaussianNoise", "RandomGrayscale"]
+    assert names[3:] == ["RandomGaussianNoise", "RandomGrayscale"]
 
 
 def test_there_is_no_global_blur_axis(cfg):
