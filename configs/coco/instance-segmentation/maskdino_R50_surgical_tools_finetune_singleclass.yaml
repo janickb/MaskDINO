@@ -25,11 +25,23 @@ INPUT:
 # real dataset. Re-size it (larger IMS_PER_BATCH across GPUs, LR, MAX_ITER)
 # before running a real training job on the multi-GPU cluster.
 SOLVER:
-  IMS_PER_BATCH: 4
-  BASE_LR: 0.0001
-  STEPS: (75000,)
-  MAX_ITER: 90000
-  CHECKPOINT_PERIOD: 10000
+
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0003
+  LR_SCHEDULER_NAME: "ReduceLROnPlateau"   # adaptive, metric-driven decay - not a fixed schedule
+  MAX_ITER: 50000
+  CHECKPOINT_PERIOD: 5000
+  WARMUP_ITERS: 250
+  WARMUP_FACTOR: 0.001     # added for carrying optimizer state
+  PLATEAU:
+    METRIC: "total_loss"     # training loss, not validation_loss: it is written every step
+    MODE: "min"
+    FACTOR: 0.5              # halve LR on each plateau, rather than PyTorch's default 10x cut
+    PATIENCE: 5              # checks (not iters) with no improvement before cutting
+    CHECK_PERIOD: 300
+    MIN_LR: 0.000002         # same floor the cosine version used, for comparability
+    THRESHOLD: 1e-2
 TEST:
   EVAL_PERIOD: 5000
-OUTPUT_DIR: "runs/single_class_v1"
+OUTPUT_DIR: "runs/single_class_v2_frozen_backbone"
+
