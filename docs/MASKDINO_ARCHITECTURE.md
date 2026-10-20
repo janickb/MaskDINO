@@ -9,33 +9,33 @@ A navigable map of this codebase tying each component to the corresponding secti
 Extracts multi-scale features from the input image.
 
 - **ResNet**: not reimplemented here — used directly from detectron2 (`build_resnet_backbone`), selected via `cfg.MODEL.BACKBONE.NAME` in configs (e.g. `configs/coco/instance-segmentation/Base-COCO-InstanceSegmentation.yaml:4`). Outputs `res2..res5` at strides 4/8/16/32.
-- **Swin Transformer**: [swin.py](maskdino/modeling/backbone/swin.py)
+- **Swin Transformer**: [swin.py](../maskdino/modeling/backbone/swin.py)
   - `SwinTransformer` — core backbone (line 498)
   - `D2SwinTransformer` — detectron2-compatible wrapper (lines 686–762), `forward()` at 743–758 returns `{res2: ..., res3: ..., res4: ..., res5: ...}`
-- Wired in: [maskdino.py](maskdino/maskdino.py) `from_config`, line 118 — `backbone = build_backbone(cfg)`, `backbone.output_shape()` (line 119) tells the pixel decoder what channels/strides to expect.
+- Wired in: [maskdino.py](../maskdino/maskdino.py) `from_config`, line 118 — `backbone = build_backbone(cfg)`, `backbone.output_shape()` (line 119) tells the pixel decoder what channels/strides to expect.
 
 ## 2. Pixel Decoder / Multi-scale Feature Enhancer — paper §3.2
 
 The paper calls this the "multi-scale feature enhancer" — in code it's named `MaskDINOEncoder` and doubles as the pixel decoder.
 
-File: [maskdino_encoder.py](maskdino/modeling/pixel_decoder/maskdino_encoder.py)
+File: [maskdino_encoder.py](../maskdino/modeling/pixel_decoder/maskdino_encoder.py)
 
 - `MSDeformAttnTransformerEncoderOnly` (lines 43–187) — a deformable-attention self-attention encoder over concatenated multi-level tokens (Deformable DETR style), using `MSDeformAttn` from `modeling/pixel_decoder/ops/modules`.
 - `MaskDINOEncoder` (lines 190–428) — docstring literally says *"this is the multi-scale encoder in detection models, also named as pixel decoder in segmentation models"* (192–194).
   - `forward_features(features, masks)` (362–428): projects backbone features → runs the deformable encoder → produces enhanced multi-scale memory → fuses the highest-res level with an FPN top-down path using untouched high-res backbone features.
   - **Returns**: `(mask_features, transformer_encoder_features, multi_scale_features)` — `mask_features` is the 1/4-resolution per-pixel embedding map later dot-producted with mask queries; `multi_scale_features` feeds the transformer decoder's deformable cross-attention.
-- Wired in: [maskdino_head.py](maskdino/modeling/meta_arch/maskdino_head.py) `layers()` (77–82) — calls `pixel_decoder.forward_features(...)`, passes outputs into the `predictor` (the transformer decoder).
+- Wired in: [maskdino_head.py](../maskdino/modeling/meta_arch/maskdino_head.py) `layers()` (77–82) — calls `pixel_decoder.forward_features(...)`, passes outputs into the `predictor` (the transformer decoder).
 
 ## 3. Transformer Decoder — paper §3.3–3.5
 
-File: [maskdino_decoder.py](maskdino/modeling/transformer_decoder/maskdino_decoder.py), `MaskDINODecoder.forward`.
+File: [maskdino_decoder.py](../maskdino/modeling/transformer_decoder/maskdino_decoder.py), `MaskDINODecoder.forward`.
 
 ### 3a. Unified Query Selection — paper §3.3
 
 Selects top-K encoder tokens as both content and positional (box anchor) initialization for decoder queries — the "unified" part is that the same selection drives detection boxes *and* mask embeddings.
 
 Lines 400–422 (`if self.two_stage:`):
-- `gen_encoder_output_proposals` (line 401, defined in [utils.py:33](maskdino/utils/utils.py)) turns flattened encoder memory into per-token box anchors (grid-based, size `0.05 * 2**level`).
+- `gen_encoder_output_proposals` (line 401, defined in [utils.py:33](../maskdino/utils/utils.py)) turns flattened encoder memory into per-token box anchors (grid-based, size `0.05 * 2**level`).
 - Lines 402–405: per-token class logits (`enc_outputs_class_unselected`) and box deltas (`enc_outputs_coord_unselected`) computed via the shared `class_embed` / `_bbox_embed` heads.
 - Line 406–407: `topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]` — top-K tokens by best class score (max-over-classes then topk-over-tokens; note this is a *different* pattern from the `//num_classes` trick at `maskdino.py:462`, see §6 below).
 - Lines 408–414: gather box coords (`refpoint_embed`) and content features (`tgt_undetach`) at those top-K token indices.
@@ -61,7 +61,7 @@ Lines 424–438 (`if self.initialize_box_type != 'no':`):
 
 ### 3d. Decoder Layer Stack — paper §3.3 (iterative refinement)
 
-File: [dino_decoder.py](maskdino/modeling/transformer_decoder/dino_decoder.py)
+File: [dino_decoder.py](../maskdino/modeling/transformer_decoder/dino_decoder.py)
 
 - `TransformerDecoder.forward` (94–168): per-layer loop over `DeformableTransformerDecoderLayer`s.
   - `gen_sineembed_for_position` + `ref_point_head` MLP (line 131) turn the current reference box into a positional query embedding (DAB/DINO-style dynamic anchor).
@@ -94,7 +94,7 @@ This is the core "dot product of mask query embedding with per-pixel mask featur
 
 ## 4. Top-Level Model & Inference — paper §3.6 / Fig. 2
 
-File: [maskdino.py](maskdino/maskdino.py), `class MaskDINO` (25–114).
+File: [maskdino.py](../maskdino/maskdino.py), `class MaskDINO` (25–114).
 
 - `forward()` (222–332): preprocess (248–250) → `backbone(images)` (252) → training: `sem_seg_head(features, targets)` runs pixel decoder + transformer decoder + DN in one call (265), then `criterion(outputs, targets, mask_dict)` (267) computes losses. Inference: `sem_seg_head(features)` (no targets, DN disabled), then dispatch to `semantic_inference` (374–391), `panoptic_inference` (393–453), or `instance_inference` (455–489) per the configured task.
 - `prepare_targets`/`prepare_targets_detr` (334–372): converts GT masks/boxes into the padded-mask + normalized-cxcywh-box format the criterion expects.
@@ -111,8 +111,8 @@ This is the standard Deformable-DETR/DINO top-k inference trick, applied here to
 
 ## 5. Matcher & Losses — paper §3.3 (loss) / Eq. for Hungarian matching
 
-- **Matcher**: [matcher.py](maskdino/modeling/matcher.py) `HungarianMatcher` (76–230) — cost = weighted sum of classification cost (sigmoid focal-style), box L1 + GIoU cost, and point-sampled mask dice + BCE cost; solved via `scipy.optimize.linear_sum_assignment` (192).
-- **Criterion**: [criterion.py](maskdino/modeling/criterion.py) `SetCriterion` (125–443):
+- **Matcher**: [matcher.py](../maskdino/modeling/matcher.py) `HungarianMatcher` (76–230) — cost = weighted sum of classification cost (sigmoid focal-style), box L1 + GIoU cost, and point-sampled mask dice + BCE cost; solved via `scipy.optimize.linear_sum_assignment` (192).
+- **Criterion**: [criterion.py](../maskdino/modeling/criterion.py) `SetCriterion` (125–443):
   - `loss_labels`/`loss_labels_ce` (163–202), `loss_boxes`/`loss_boxes_panoptic` (204–248), `loss_masks` (250–300, point-sampled BCE + dice via detectron2 PointRend utilities).
   - `forward()` (334–427): matches + computes losses for the final layer, **DN losses** (`_dn` suffix, 372–386, using a direct known-index mapping instead of Hungarian matching since DN queries are pre-assigned), **deep supervision** losses per decoder layer (`_i` suffix, 389–417), and **interm/two-stage** losses (`_interm` suffix, 419–425) supervising the unified query selection output from §3a.
 

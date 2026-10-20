@@ -233,14 +233,14 @@ def add_maskdino_config(cfg):
     # if False, keep the image size and let the corners rotate out of frame
     cfg.INPUT.ROTATION_EXPAND = False
     # Photometric augmentation, applied after the geometric block in
-    # build_transform_gen. These defaults reproduce exactly what used to be
-    # hardcoded there, so every pre-existing config is unaffected; they exist as
-    # config so an A/B arm can dial the appearance-randomization *dose*.
+    # build_transform_gen. These defaults are what used to be hardcoded there
+    # (minus the dropped PCA-lighting axis, see build_photometric_augmentations);
+    # they exist as config so an A/B arm can dial the appearance-randomization
+    # *dose*.
     cfg.INPUT.PHOTOMETRIC = CN()
     cfg.INPUT.PHOTOMETRIC.BRIGHTNESS = [0.7, 1.3]
     cfg.INPUT.PHOTOMETRIC.CONTRAST = [0.7, 1.3]
     cfg.INPUT.PHOTOMETRIC.SATURATION = [0.8, 1.2]
-    cfg.INPUT.PHOTOMETRIC.LIGHTING = 0.9  # T.RandomLighting scale (PCA lighting noise)
     # The two axes below are new and OFF by default (prob 0 -> not even appended),
     # so turning them on is always an explicit, per-arm decision.
     cfg.INPUT.PHOTOMETRIC.NOISE_PROB = 0.0
