@@ -1,4 +1,4 @@
-_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+_BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
 # --- Phase-2 REALISM arm -----------------------------------------------------
 # Not a dose level. Every value below is set from a measurement against
 # `reclass_set_home` (real tool photos, a TRAINING split - never from val, which

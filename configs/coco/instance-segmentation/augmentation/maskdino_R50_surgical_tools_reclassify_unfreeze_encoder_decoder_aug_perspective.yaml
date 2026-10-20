@@ -1,4 +1,4 @@
-_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+_BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
 # --- Appearance-dose sweep, side arm: PERSPECTIVE ----------------------------
 # Deliberately NOT part of the mild/control/strong/extreme ladder. Its photometric
 # dose is identical to the control arm, so the ONLY difference from control is the

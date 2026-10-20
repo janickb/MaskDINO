@@ -1,4 +1,4 @@
-_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+_BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
 # --- Appearance-dose sweep, arm A0: CONTROL ----------------------------------
 # The dose that was hardcoded in build_transform_gen before INPUT.PHOTOMETRIC
 # existed, written out explicitly so this arm is auditable rather than implied.
