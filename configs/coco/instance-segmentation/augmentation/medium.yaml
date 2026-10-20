@@ -1,0 +1,27 @@
+_BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+# --- Phase-2 augmentation wave, arm: MEDIUM ----------------------------------
+# Same axes as LOW, wider (+/-25%). LOW vs MEDIUM is the only clean pairwise
+# comparison of frame-level width in this wave (noise is identical in both).#
+# Shared protocol (held identical across every arm in this wave): base config
+# above (encoder+decoder+head trainable, backbone frozen), DATASETS.TRAIN
+# reclass_setab_mm -> DATASETS.TEST val_setab_mm, COPY_PASTE.ENABLED True with
+# CLUSTER_PROB 1.0 and PERSPECTIVE.PROB 0.0. Scale / batch / iters / seed are set
+# on the command line at launch, NOT here, so no arm file can drift on anything
+# but its own dose. Previous wave used MAX_ITER 10000, IMS_PER_BATCH 3 (3 GPUs x
+# 1 img), BASE_LR 1e-5, MIN_SCALE/MAX_SCALE 1.0/1.0, TEST_SAMPLE_STRIDE 4; match
+# that or this wave is not comparable to appearance_aug_sweep_phase2.md.
+
+INPUT:
+  COPY_PASTE:
+    INSTANCE_JITTER:
+      BRIGHTNESS:  [1.0, 1.0]
+      CONTRAST:    [1.0, 1.0]
+      SATURATION:  [1.0, 1.0]
+      HUE_DEGREES: 0.0
+  PHOTOMETRIC:
+    BRIGHTNESS: [0.75, 1.25]
+    CONTRAST:   [0.75, 1.25]
+    SATURATION: [0.75, 1.25]
+    NOISE_PROB: 0.25
+    NOISE_STD:  [0.0, 1.0]
+OUTPUT_DIR: "runs/augexp_medium"
