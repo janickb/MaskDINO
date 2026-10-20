@@ -45,7 +45,7 @@ its own dose:
 | `aug_perspective_tilt60` | 0.8580 | -0.0203 | -4.4 | tilt 60 deg alone |
 
 The winning recipe is
-[..._aug_abl_jitteronly.yaml](../../configs/coco/instance-segmentation/maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_abl_jitteronly.yaml):
+[..._aug_abl_jitteronly.yaml](../../configs/coco/instance-segmentation/augmentation/maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_abl_jitteronly.yaml):
 per pasted instance, brightness `[0.72, 0.88]`, contrast `[1.50, 1.90]`, saturation
 `[0.9, 1.3]`, hue `4 deg`, blur sigma `[0.0, 0.5]` - centres 0.80/1.70 calibrated to land
 synthetic tool-pixel mean/std on the real-photo target (130.6 / 53.7).
