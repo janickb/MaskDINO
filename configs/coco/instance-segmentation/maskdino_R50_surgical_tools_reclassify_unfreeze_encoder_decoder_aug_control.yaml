@@ -15,5 +15,7 @@ INPUT:
     BRIGHTNESS: [0.7, 1.3]
     CONTRAST: [0.7, 1.3]
     SATURATION: [0.8, 1.2]
-    LIGHTING: 0.9
+    # Ran with LIGHTING: 0.9. That axis has since been deleted (see
+    # build_photometric_augmentations): it was inert at every scale, so its removal
+    # does not change what this arm reproduces.
 OUTPUT_DIR: "runs/aug_control"

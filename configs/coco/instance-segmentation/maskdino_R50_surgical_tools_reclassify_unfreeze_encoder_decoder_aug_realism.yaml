@@ -37,7 +37,10 @@ INPUT:
     BRIGHTNESS: [0.85, 1.15]   # between-session variation is ~30%; nothing wider
     CONTRAST:   [0.85, 1.15]
     SATURATION: [0.8, 1.5]     # 3.4x between real sessions - widest real axis
-    LIGHTING:   0.3
+    # Ran with LIGHTING: 0.3 (narrowed from the default 0.9 as part of the
+    # frame-level bundle). The axis has since been deleted: it was inert at BOTH
+    # scales - identical realized output - so that part of the bundle contributed
+    # nothing, which is consistent with the bundle measuring null.
     NOISE_PROB: 0.5
     NOISE_STD:  [0.5, 2.0]     # renders are cleaner than both real sets
     GRAYSCALE_PROB: 0.0        # occurs nowhere in the real data

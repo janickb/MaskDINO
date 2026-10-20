@@ -30,7 +30,7 @@ INPUT:
     BRIGHTNESS: [0.7, 1.3]
     CONTRAST: [0.7, 1.3]
     SATURATION: [0.8, 1.2]
-    LIGHTING: 0.9
+    # Ran with LIGHTING: 0.9 - axis since deleted, inert at every scale.
   COPY_PASTE:
     PERSPECTIVE:
       # PROB 1.0, matching how rotation behaves: per-instance rotation has no gate
