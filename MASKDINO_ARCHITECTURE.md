@@ -72,6 +72,38 @@ File: [dino_decoder.py](maskdino/modeling/transformer_decoder/dino_decoder.py)
   - **Deformable cross-attention** (260–263) via `MSDeformAttn` — each query samples a small set of learned points around its current reference box in the multi-scale memory (efficient vs. dense attention).
   - Standard FFN (214–218) with residual + LayerNorm throughout.
 
+#### Inspecting what a query attended to
+
+Because the cross-attention is *deformable*, there is no dense query→pixel
+attention matrix to visualize the way Mask2Former's masked attention allows.
+What exists per query, per layer is a sparse set of samples: `n_heads × n_levels
+× n_points` locations (each a normalized xy) with a weight each, softmaxed over
+`n_levels × n_points` within each head. `MSDeformAttn.forward` caches exactly
+that — plus the `reference_points` the layer sampled around — when the
+`capture_attn` flag is set on it; the flag is absent by default, so train and
+eval are untouched.
+
+[maskdino/visualization/attention.py](maskdino/visualization/attention.py) owns
+the capture (`capture_decoder_attention`), the sidecar format and the Gaussian
+rasterizer; `tools/export_attention.py` drives it over a folder of frames and
+hdf5_viewer's Attention tab renders the result. Two things to know before
+reading the output:
+
+- **Layer counts differ by one.** With `INITIAL_PRED=True` there is one more
+  *prediction* than there are layers with cross-attention: the layer-0
+  prediction comes from the raw encoder-selected `tgt`, which never attended to
+  anything. The captured stack therefore has `DEC_LAYERS` entries, not
+  `DEC_LAYERS + 1`.
+- **Attributing a detection to a query** requires `instance_inference`'s
+  `topk_indices`, which is why it is exposed as `Instances.query_indices`
+  ([maskdino.py](maskdino/maskdino.py), `instance_inference`). Without it, a
+  drawn instance cannot be traced back into the decoder at all.
+
+Nothing here is specific to a layer/level count — `DEC_LAYERS` and
+`TOTAL_NUM_FEATURE_LEVELS` vary between this fork's configs (9 layers × 3 levels
+in the multiclass set-A configs, 6 × 4 in the upstream defaults), and the shapes
+are read off the captured tensors.
+
 ### 3e. Prediction Heads — paper §3.3
 
 Defined in `MaskDINODecoder.__init__`:

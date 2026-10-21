@@ -113,6 +113,16 @@ class MSDeformAttn(nn.Module):
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
+        # Attention-visualization hook (maskdino/visualization/attention.py). Off unless
+        # capture_decoder_attention() set the flag, so no existing instance - the pixel
+        # decoder's included - is affected and nothing changes in train/eval. getattr
+        # rather than an __init__ default so checkpoints and module state are untouched.
+        if getattr(self, "capture_attn", False):
+            self.last_attn = (
+                sampling_locations.detach().to("cpu", torch.float32),
+                attention_weights.detach().to("cpu", torch.float32),
+                reference_points.detach().to("cpu", torch.float32),
+            )
         # Forced to the pure-PyTorch fallback: the compiled CUDA kernel corrupts the CUDA
         # stream under this torch/CUDA build (surfaces as "invalid resource handle" on the
         # next unrelated CUDA call), so the try/except around MSDeformAttnFunction.apply

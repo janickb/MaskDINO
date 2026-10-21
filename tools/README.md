@@ -64,3 +64,29 @@ python tools/compare_backbone_weights.py --finetuned runs/multi_class_seta_froze
 
 python tools/compare_backbone_weights.py --finetuned runs/multi_class_seta_unfrozen_backbone/model_final.pth --cka --image-dir /path/to/sample_images
 ```
+
+
+* `export_attention.py`
+
+Tool to export the decoder's cross-attention per detection - "where did the model
+look when it detected this instrument?" - as `<frame>.attn.hdf5` sidecars that
+hdf5_viewer's Attention tab reads (see `maskdino/visualization/attention.py`).
+MaskDINO's cross-attention is deformable, so what is stored is the sparse set of
+weighted sample points per head/level/layer plus each layer's reference box, not
+a dense attention map; the heatmap is rasterized at display time.
+
+`--preview` additionally writes a PNG per frame (image, then one heatmap panel
+per detection with its mask outlined) so an export can be checked without the
+viewer.
+
+```
+python tools/export_attention.py \
+    --config-file configs/coco/instance-segmentation/maskdino_R50_surgical_tools_finetune_multiclass_seta_frozen_backbone.yaml \
+    --input "$HOME/training/images_lambdablade-6000/val_set_a_mm/*.hdf5" \
+    --output /tmp/attn --preview \
+    --opts MODEL.WEIGHTS runs/20260915_multi_class_seta_frozen/model_final.pth
+
+# everything the model saw, including low-confidence queries, plus the dense
+# per-query response maps (bulky - fp16 at 1/4 resolution, one per detection)
+python tools/export_attention.py ... --confidence-threshold 0.0 --max-detections 20 --dense
+```
