@@ -176,6 +176,16 @@ it answers for one detection rather than for the frame.
   the segmentation, so the clip is a still image for most detections - the panel
   says so rather than playing it. `stage_masks` keeps per-stage probability maps
   for the top 12 detections (~9.4 MB/frame, uint8) to render it.
+- `rivals()` / `contested()` answer "who else claims these pixels". Queries are
+  **not** mutually exclusive - each mask is an independent sigmoid, not a
+  softmax across queries - so 5-6 routinely land on one object at IoU > 0.9.
+  But only one is ever class-confident: measured over 30 frames, exactly **one**
+  group had two confident queries with different labels, and zero had two that
+  agreed. Hungarian matching pushes every unmatched query to "no object", so
+  **suppression happens in the classifier, never in the mask head**. The panel
+  draws the per-pixel claim count with `class_map_panel.overlay_cmap` - drawing
+  each rival as an outline was tried and discarded, since at IoU ~0.97 the
+  boundaries land on top of one another.
 - Observed signature on a real failure: the mask track is **flat** at ~0.98
   across all 11 stages while the class track peaks at `layer2` and flips at
   `layer4`. The segmentation was right the whole time; the classifier talked

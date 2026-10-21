@@ -85,6 +85,7 @@ def render_stage_trace_panel(trace, score_threshold=0.5, rgb=None, key_prefix="t
         st.dataframe(pd.DataFrame(table), hide_index=True, width="stretch")
 
     _mask_clip(st, trace, det, rgb, k)
+    _rivals(st, trace, det, rgb)
 
     with st.expander("What am I looking at?"):
         st.markdown(_EXPLAINER)
@@ -225,6 +226,104 @@ def _mask_clip(st, trace, det, rgb, k):
             "Cropped to the detection's box. The `encoder` stage is absent: the "
             "model builds no mask there."
         )
+
+
+# How many queries claim each pixel is a MAGNITUDE, not an identity, so it is
+# drawn with a sequential ramp, never categorical hues. The ramp comes from
+# class_map_panel.overlay_cmap rather than being invented here: that module owns
+# this repo's overlay visual language, and its default (inferno) was chosen
+# precisely because a blue ramp disappears into these renders' blue-purple mat.
+# Outlining each rival separately was tried and discarded - at IoU ~0.97 the
+# boundaries land on top of one another and nothing is legible.
+
+
+def _rivals(st, trace, det, rgb):
+    """Who else claims these pixels.
+
+    Queries are not mutually exclusive here, so several routinely land on one
+    object. The point of the view is that the duplicates are class-SILENT: the
+    classifier does the suppressing, not the mask head.
+    """
+    rivals = trace.rivals(det)
+    if not rivals:
+        return
+    contested = trace.contested(det)
+    title = f"Competing queries - {len(rivals)} other queries claim these pixels"
+    if contested:
+        title += f"  ({len(contested)} contested)"
+
+    with st.expander(title):
+        import pandas as pd
+
+        mine = trace.class_name(trace.pred_classes[det])
+        st.dataframe(pd.DataFrame(
+            [{"query": q, "IoU with this mask": round(i, 3),
+              "its best class": c, "its score": round(sc, 3),
+              "": "contested" if (sc >= 0.3 and c != mine) else "silenced"}
+             for q, i, c, sc in rivals]), hide_index=True, width="stretch")
+
+        if contested:
+            st.warning(
+                "Another query holds a **confident and different** label for the "
+                "same pixels. That is rare (~1 group per 30 frames) - usually the "
+                "duplicates are pushed to ~0.01 by Hungarian matching."
+            )
+        else:
+            st.caption(
+                f"All {len(rivals)} rivals are class-silent. They agree on *where* "
+                "the object is and have no opinion on *what* it is - Hungarian "
+                "matching trains one query per object and pushes the rest to "
+                "\"no object\". Suppression happens in the classifier, never in "
+                "the mask head."
+            )
+
+        img, peak = _claim_map(trace, det, rgb)
+        if img is not None:
+            st.image(img, caption=(
+                f"how many of the {len(rivals) + 1} queries claim each pixel - "
+                f"up to {peak} on the core, fewer at the fringe where they differ"))
+
+
+def _claim_map(trace, det, rgb, pad=0.3, size=460):
+    """Per-pixel count of how many of the overlapping queries claim it."""
+    from PIL import Image
+
+    if rgb is None or trace.query_masks is None:
+        return None, 0
+    base = np.asarray(rgb)[:, :, :3]
+    H, W = base.shape[:2]
+    mh, mw = trace.query_masks.shape[-2:]
+    ys = (np.arange(H) * mh // H).clip(0, mh - 1)
+    xs = (np.arange(W) * mw // W).clip(0, mw - 1)
+
+    x0, y0, x1, y1 = trace.pred_boxes[det]
+    m = pad * max(x1 - x0, y1 - y0)
+    cx0, cy0 = max(int(x0 - m), 0), max(int(y0 - m), 0)
+    cx1, cy1 = min(int(x1 + m), W), min(int(y1 + m), H)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return None, 0
+
+    qs = [int(trace.query_index[det])] + [r[0] for r in trace.rivals(det)]
+    # index the nearest-neighbour row/column maps for the crop only, so the
+    # full-frame upsample is never materialised
+    ys_c, xs_c = ys[cy0:cy1], xs[cx0:cx1]
+    stack = trace.query_masks[qs][:, ys_c][:, :, xs_c]        # (K, ch, cw)
+    count = stack.sum(0).astype(np.int32)
+    peak = int(count.max())
+    if peak == 0:
+        return None, 0
+
+    from .class_map_panel import overlay_cmap
+
+    out = base[cy0:cy1, cx0:cx1].astype(np.float32) / 255.0
+    # 1 claim -> low end, `peak` claims -> high end; 0 stays fully transparent
+    norm = np.where(count > 0, count / max(peak, 1), 0.0)
+    rgba = overlay_cmap()(norm)
+    alpha = rgba[..., 3:] * (count > 0)[..., None]
+    out = out * (1 - alpha) + rgba[..., :3] * alpha
+
+    img = Image.fromarray((out * 255).clip(0, 255).astype(np.uint8))
+    return img.resize((size, max(int(size * img.height / max(img.width, 1)), 1))), peak
 
 
 def _build_clip(trace, det, rgb, pad=0.25, size=320, ms=420):

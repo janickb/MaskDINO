@@ -95,6 +95,14 @@ class StageTrace:
     - stage_masks (K, S, h, w) uint8 - optional per-stage probability maps
       (sigmoid x 255) for the first K detections, for rendering an evolution
       clip. None unless `keep_stage_masks` was passed.
+    - query_masks (nq, h, w) bool + rival_* (D, R) - optional "who else claims
+      these pixels" summary. Queries are NOT mutually exclusive in MaskDINO -
+      each mask is an independent sigmoid, not a softmax across queries - so
+      several routinely claim one object. Measured: 5-6 queries per object at
+      IoU > 0.9, but only one is ever class-confident; the rest sit at ~0.01
+      because Hungarian matching pushes every unmatched query to "no object".
+      Suppression happens in the classifier, never in the mask head.
+      None unless `keep_rivals` was passed.
     """
 
     stage_names: list
@@ -110,6 +118,11 @@ class StageTrace:
     image_size: tuple = (0, 0)
     mask_size: tuple = (0, 0)
     stage_masks: np.ndarray | None = None
+    query_masks: np.ndarray | None = None
+    rival_queries: np.ndarray | None = None
+    rival_iou: np.ndarray | None = None
+    rival_classes: np.ndarray | None = None
+    rival_scores: np.ndarray | None = None
     class_names: list = field(default_factory=list)
     source_frame: str = ""
     checkpoint: str = ""
@@ -229,6 +242,27 @@ class StageTrace:
         first = next((float(v) for v in iou if np.isfinite(v)), float("nan"))
         return first, bool(np.isfinite(first) and first < threshold)
 
+    def rivals(self, det):
+        """[(query, iou, class name, score)] for the queries claiming the same
+        pixels, best overlap first. Empty when rivals were not captured."""
+        if self.rival_queries is None:
+            return []
+        out = []
+        for k, q in enumerate(self.rival_queries[det]):
+            if int(q) < 0:
+                continue
+            out.append((int(q), float(self.rival_iou[det, k]),
+                        self.class_name(self.rival_classes[det, k]),
+                        float(self.rival_scores[det, k])))
+        return out
+
+    def contested(self, det, min_score=0.3):
+        """Rivals that are BOTH confident and labelled differently - the rare
+        case where two queries genuinely disagree about one object rather than
+        one simply being silenced. Measured at ~1 group per 30 frames."""
+        mine = self.class_name(self.pred_classes[det])
+        return [r for r in self.rivals(det) if r[3] >= min_score and r[2] != mine]
+
     def final_score_check(self, det):
         """(reconstructed, reported) final score.
 
@@ -337,6 +371,48 @@ class _StageCapture:
         tokens = torch.topk(logits.max(-1)[0], num_queries)[1]
         return logits, tokens
 
+    def _rivals(self, pairs, feats, kept_q, max_rivals, min_iou):
+        """Which other queries claim the same pixels, at the final stage.
+
+        Uses a matmul for the pairwise intersection rather than broadcasting a
+        (D, nq, HW) boolean - that would be ~160 MB for 25 detections.
+        """
+        import torch
+
+        with torch.no_grad():
+            dec = pairs[-1][0]
+            dec = dec[0] if dec.dim() == 3 else dec                # (nq, C)
+            m = torch.einsum("nc,chw->nhw", self.predictor.mask_embed(dec), feats)
+            b = (m > 0)                                            # (nq, h, w)
+            flat = b.flatten(1).float()                            # (nq, HW)
+            logits = pairs[-1][1]
+            prob = (logits[0] if logits.dim() == 3 else logits).sigmoid()
+
+            sel = flat[kept_q]                                     # (D, HW)
+            inter = sel @ flat.t()                                 # (D, nq)
+            area = flat.sum(1)
+            union = (area[kept_q][:, None] + area[None, :] - inter).clamp_min(1)
+            iou = (inter / union).cpu().numpy()
+
+        d, nq = iou.shape
+        rq = np.full((d, max_rivals), -1, np.int32)
+        ri = np.zeros((d, max_rivals), np.float32)
+        rc = np.full((d, max_rivals), -1, np.int32)
+        rs = np.zeros((d, max_rivals), np.float32)
+        best_cls = prob.argmax(-1).cpu().numpy()
+        best_scr = prob.max(-1)[0].cpu().numpy()
+        for i, qi in enumerate(kept_q):
+            order = np.argsort(-iou[i])
+            picked = [j for j in order if j != qi and iou[i, j] >= min_iou][:max_rivals]
+            for k, j in enumerate(picked):
+                rq[i, k], ri[i, k] = j, iou[i, j]
+                rc[i, k], rs[i, k] = best_cls[j], best_scr[j]
+        return {
+            "query_masks": b.cpu().numpy(),
+            "rival_queries": rq, "rival_iou": ri,
+            "rival_classes": rc, "rival_scores": rs,
+        }
+
     def stage_names(self, n_stages):
         """Name the per-query calls by MaskDINODecoder.forward's call order:
         interm (two-stage query selection), initial_pred, then one per decoder
@@ -359,7 +435,8 @@ class _StageCapture:
         return names
 
     def record(self, instances, image_size=None, max_detections=None, class_names=None,
-               source_frame="", checkpoint="", config_file="", keep_stage_masks=0):
+               source_frame="", checkpoint="", config_file="", keep_stage_masks=0,
+               keep_rivals=0, rival_min_iou=0.3):
         """Join the per-stage readouts to a kept-detection `Instances`."""
         import torch
 
@@ -434,6 +511,9 @@ class _StageCapture:
             mask_scores = np.concatenate([nan, mask_scores], axis=1)
             mask_areas = np.concatenate([np.zeros((d, 1), np.int32), mask_areas], axis=1)
 
+        rivals = self._rivals(pairs, feats, q, keep_rivals, rival_min_iou) \
+            if keep_rivals else {}
+
         return StageTrace(
             stage_names=names,
             class_logits=np.ascontiguousarray(
@@ -449,6 +529,7 @@ class _StageCapture:
             pred_boxes=instances.pred_boxes.tensor.cpu().numpy()[keep].astype(np.float32),
             image_size=tuple(image_size or instances.image_size),
             mask_size=tuple(feats.shape[-2:]),
+            **rivals,
             class_names=list(class_names or []),
             source_frame=source_frame,
             checkpoint=checkpoint,
