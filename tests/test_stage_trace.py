@@ -474,3 +474,66 @@ def test_stage_agreement_matches_agreement_rate_at_the_encoder_stage():
 def test_stage_agreement_is_one_at_the_final_stage():
     trace = _trace_with_winners([0, 1, 2, 3, 3, 3, 3], scores=[0.9, 0.8])
     assert trace.stage_agreement()[-1] == pytest.approx(1.0)
+
+
+# ------------------------------------------------------- mask evolution clip
+
+
+def test_mask_iou_to_final_is_nan_at_encoder_and_one_at_the_end():
+    model, predictor = _toy_model()
+    trace = _run(model, predictor).record(_instances([0, 3], [0.9, 0.8]))
+    assert trace.mask_iou_to_final.shape == (2, 1 + 2 + LAYERS)
+    assert np.isnan(trace.mask_iou_to_final[:, 0]).all()   # no mask at `encoder`
+    np.testing.assert_allclose(trace.mask_iou_to_final[:, -1], 1.0)
+    rest = trace.mask_iou_to_final[:, 1:]
+    assert ((rest >= 0.0) & (rest <= 1.0)).all()
+
+
+def test_mask_moves_reads_the_first_real_stage_not_the_nan():
+    model, predictor = _toy_model()
+    trace = _run(model, predictor).record(_instances([0], [0.9]))
+    first, moved = trace.mask_moves(0)
+    assert np.isfinite(first), "must skip the NaN encoder stage"
+    assert first == pytest.approx(float(trace.mask_iou_to_final[0, 1]))
+    assert moved == (first < 0.9)
+
+
+def test_mask_moves_threshold_flags_only_the_ones_worth_animating():
+    model, predictor = _toy_model()
+    trace = _run(model, predictor).record(_instances([0], [0.9]))
+    trace.mask_iou_to_final = np.array([[np.nan, 0.55] + [1.0] * (1 + LAYERS)], np.float32)
+    assert trace.mask_moves(0) == (pytest.approx(0.55), True)
+    trace.mask_iou_to_final = np.array([[np.nan, 0.99] + [1.0] * (1 + LAYERS)], np.float32)
+    assert trace.mask_moves(0) == (pytest.approx(0.99), False)
+
+
+def test_stage_masks_are_only_kept_when_asked_for():
+    model, predictor = _toy_model()
+    cap = _run(model, predictor)
+    assert cap.record(_instances([0, 1], [0.9, 0.8])).stage_masks is None
+
+    cap2 = _run(*_toy_model())
+    trace = cap2.record(_instances([0, 1, 2], [0.9, 0.8, 0.7]), keep_stage_masks=2)
+    # (K, S-1, h, w) uint8 probabilities - K capped, encoder stage absent
+    assert trace.stage_masks.shape == (2, 2 + LAYERS, MASK_H, MASK_W)
+    assert trace.stage_masks.dtype == np.uint8
+
+
+def test_stage_masks_cap_cannot_exceed_the_detection_count():
+    model, predictor = _toy_model()
+    trace = _run(model, predictor).record(_instances([0], [0.9]), keep_stage_masks=99)
+    assert trace.stage_masks.shape[0] == 1
+
+
+def test_stage_masks_survive_the_dict_round_trip_but_not_the_sidecar(tmp_path):
+    """to_dict carries them (the viewer caches that), the HDF5 sidecar does not
+    - they are bulky and reconstructable."""
+    model, predictor = _toy_model()
+    trace = _run(model, predictor).record(_instances([0], [0.9]), keep_stage_masks=1)
+    back = st_mod.StageTrace.from_dict(trace.to_dict())
+    np.testing.assert_array_equal(back.stage_masks, trace.stage_masks)
+
+    on_disk = st_mod.read_stage_trace(
+        st_mod.write_stage_trace(tmp_path / "t.hdf5", trace))
+    assert on_disk.stage_masks is None
+    np.testing.assert_allclose(on_disk.mask_iou_to_final, trace.mask_iou_to_final)

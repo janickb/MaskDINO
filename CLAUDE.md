@@ -169,6 +169,13 @@ it answers for one detection rather than for the frame.
 - Needs `Instances.query_indices` ([maskdino.py](maskdino/maskdino.py),
   `instance_inference`) — the only detection → query mapping. This is the one
   model edit the visualization layer relies on.
+- `mask_iou_to_final` / `mask_moves()` answer "does this mask actually move?"
+  before anyone renders an evolution clip. Measured over 121 detections: the
+  median mask is **97.7% of its final shape at `interm`**, before any decoder
+  layer runs, and only ~9% fall below 0.9. The decoder refines the *label*, not
+  the segmentation, so the clip is a still image for most detections - the panel
+  says so rather than playing it. `stage_masks` keeps per-stage probability maps
+  for the top 12 detections (~9.4 MB/frame, uint8) to render it.
 - Observed signature on a real failure: the mask track is **flat** at ~0.98
   across all 11 stages while the class track peaks at `layer2` and flips at
   `layer4`. The segmentation was right the whole time; the classifier talked

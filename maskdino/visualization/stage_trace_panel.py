@@ -49,7 +49,7 @@ def _theme(st):
     return _THEME["dark" if str(base).lower() == "dark" else "light"]
 
 
-def render_stage_trace_panel(trace, score_threshold=0.5, key_prefix="trace"):
+def render_stage_trace_panel(trace, score_threshold=0.5, rgb=None, key_prefix="trace"):
     """Render the per-stage class-vs-mask chart for one detection."""
     import streamlit as st
 
@@ -83,6 +83,8 @@ def render_stage_trace_panel(trace, score_threshold=0.5, key_prefix="trace"):
         table["mask score"] = trace.mask_scores[det].round(3)
         table["mask px"] = trace.mask_areas[det]
         st.dataframe(pd.DataFrame(table), hide_index=True, width="stretch")
+
+    _mask_clip(st, trace, det, rgb, k)
 
     with st.expander("What am I looking at?"):
         st.markdown(_EXPLAINER)
@@ -182,6 +184,92 @@ def _chart(st, trace, det, probs, classes, theme, score_threshold):
     fig.tight_layout()
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
+
+
+def _mask_clip(st, trace, det, rgb, k):
+    """The mask's own evolution across stages, as a clip.
+
+    Led by whether it moves at all: for most detections the mask is settled
+    before the first decoder layer (median first-stage IoU ~0.98), so the clip
+    would be a still image and saying so is more useful than playing it.
+    """
+    first_iou, moved = trace.mask_moves(det)
+    if not np.isfinite(first_iou):
+        return
+
+    with st.expander(
+        f"Mask evolution - IoU {first_iou:.2f} from first stage to final"
+        + ("  (it moves)" if moved else "  (essentially static)")
+    ):
+        if not moved:
+            st.caption(
+                f"This mask is {first_iou:.1%} of its final shape before any decoder "
+                "layer runs, so the clip below is near-still. The decoder refined the "
+                "*label*, not the segmentation - which is the usual case here."
+            )
+        stored = 0 if trace.stage_masks is None else len(trace.stage_masks)
+        if det >= stored:
+            st.caption(
+                f"No per-stage masks stored for #{det}: only the {stored} "
+                "highest-scoring detections keep them, to bound the cache entry. "
+                f"Clips are available for #0-#{stored - 1}." if stored else
+                "Per-stage masks were not captured for this frame."
+            )
+            return
+        gif = _build_clip(trace, det, rgb)
+        if gif is None:
+            st.caption("Need the frame image to render the clip.")
+            return
+        st.image(gif, caption=f"{trace.label(det)} - mask probability per stage")
+        st.caption(
+            "Cropped to the detection's box. The `encoder` stage is absent: the "
+            "model builds no mask there."
+        )
+
+
+def _build_clip(trace, det, rgb, pad=0.25, size=320, ms=420):
+    """Animated GIF of the per-stage mask over the frame, cropped to the box."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    if rgb is None:
+        return None
+    base = np.asarray(rgb)[:, :, :3]
+    H, W = base.shape[:2]
+    mh, mw = trace.stage_masks.shape[-2:]
+
+    x0, y0, x1, y1 = trace.pred_boxes[det]
+    m = pad * max(x1 - x0, y1 - y0)
+    cx0, cy0 = max(int(x0 - m), 0), max(int(y0 - m), 0)
+    cx1, cy1 = min(int(x1 + m), W), min(int(y1 + m), H)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return None
+    crop = base[cy0:cy1, cx0:cx1]
+
+    frames = []
+    # stage_masks has no encoder stage; align names to the tail of the list
+    names = trace.stage_names[trace.num_stages - trace.stage_masks.shape[1]:]
+    for i, name in enumerate(names):
+        prob = trace.stage_masks[det, i].astype(np.float32) / 255.0
+        # mask resolution -> frame resolution by nearest-neighbour, then crop
+        ys = (np.arange(H) * mh // H).clip(0, mh - 1)
+        xs = (np.arange(W) * mw // W).clip(0, mw - 1)
+        full = prob[np.ix_(ys, xs)][cy0:cy1, cx0:cx1]
+        over = crop.astype(np.float32).copy()
+        # tint the foreground; alpha follows the probability so a fuzzy mask
+        # looks fuzzy rather than being thresholded into false crispness
+        alpha = np.clip((full - 0.5) * 2.0, 0, 1)[..., None]
+        over = over * (1 - 0.55 * alpha) + np.array([255.0, 90.0, 40.0]) * 0.55 * alpha
+        img = Image.fromarray(over.clip(0, 255).astype(np.uint8))
+        img = img.resize((size, int(size * img.height / max(img.width, 1))))
+        ImageDraw.Draw(img).text((6, 4), name, fill=(255, 255, 255))
+        frames.append(img.convert("P", palette=Image.ADAPTIVE))
+
+    buf = io.BytesIO()
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:],
+                   duration=ms, loop=0)
+    return buf.getvalue()
 
 
 def _readout(st, trace, det, probs, score_threshold):
