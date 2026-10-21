@@ -21,6 +21,22 @@ einsum on it reproduces `forward_prediction_heads`' own arithmetic. Nothing in
 the model changes, and the only edit this relies on is
 `Instances.query_indices` (maskdino.py), the detection -> query mapping.
 
+The first stage is the DENSE encoder readout - `class_embed(output_memory)`,
+the tensor two-stage query selection actually runs its top-k on - gathered at
+the token that became each query. It is deliberately separate from `interm`,
+because the two are NOT the same computation even though both are
+"the encoder's class scores" for the same token:
+
+    encoder : class_embed(output_memory)                 (maskdino_decoder.py:403)
+    interm  : class_embed(decoder_norm(output_memory))   (forward_prediction_heads)
+
+`forward_prediction_heads` applies an extra LayerNorm that the dense call never
+sees. Measured on a real checkpoint that scales the top-class confidence by
+~0.62x and changes the winning class outright in ~8% of detections. Anyone
+comparing the class-map panel against this trace will otherwise see numbers
+that disagree for no visible reason. The encoder stage has no mask of its own
+(the model never builds one there), so its mask score is NaN.
+
 One caveat on scale: the reconstructed masks live at `mask_features`
 resolution (1/4 of the padded frame), while `instance_inference` scores the
 upsampled mask. The per-stage mask scores here are therefore self-consistent
@@ -138,12 +154,18 @@ class StageTrace:
     def encoder_stage(self):
         """Index of the encoder-level readout.
 
-        `interm` is `class_embed` on the gathered encoder memory tokens, before
-        any decoder layer runs - the encoder's own verdict on the query it just
-        selected. Returns None when TWO_STAGE is off, in which case there is no
-        encoder-level per-query prediction to compare against.
+        Prefers the dense `encoder` stage - `class_embed(output_memory)`, the
+        tensor query selection actually gates on - and falls back to `interm`,
+        which is the same classifier on the same token but behind an extra
+        LayerNorm (see the module docstring; it is ~0.62x lower and disagrees on
+        the winning class ~8% of the time, so the two are not interchangeable).
+
+        None when neither exists, i.e. TWO_STAGE is off.
         """
-        return self.stage_names.index("interm") if "interm" in self.stage_names else None
+        for name in ("encoder", "interm"):
+            if name in self.stage_names:
+                return self.stage_names.index(name)
+        return None
 
     def agrees_with_final(self, det):
         """Does the encoder's leading class survive to the last stage?
@@ -277,6 +299,23 @@ class _StageCapture:
             )
         return pairs
 
+    def _dense_call(self, num_queries):
+        """(dense logits, query -> token) for the encoder-level readout.
+
+        Reproduces the two-stage gate exactly as maskdino_decoder.py:406 does -
+        top-k over max-over-classes - so token[q] is the encoder token that
+        became query q. None when there is no dense call (single-stage config).
+        """
+        import torch
+
+        dense = [o for i, o in zip(self._inputs, self._outputs)
+                 if i.shape[-2] != num_queries]
+        if not dense:
+            return None
+        logits = dense[0][0] if dense[0].dim() == 3 else dense[0]
+        tokens = torch.topk(logits.max(-1)[0], num_queries)[1]
+        return logits, tokens
+
     def stage_names(self, n_stages):
         """Name the per-query calls by MaskDINODecoder.forward's call order:
         interm (two-stage query selection), initial_pred, then one per decoder
@@ -314,6 +353,7 @@ class _StageCapture:
         num_queries = int(self._inputs[-1].shape[-2])
         pairs = self._query_stages(num_queries)
         names = self.stage_names(len(pairs))
+        dense = self._dense_call(num_queries)
 
         queries = instances.query_indices.cpu().numpy().astype(np.int64)
         scores = instances.scores.cpu().numpy().astype(np.float32)
@@ -328,6 +368,11 @@ class _StageCapture:
         # (S, D, C) decoder outputs for the kept queries only
         dec = torch.stack([i[0, q] if i.dim() == 3 else i[q] for i, _ in pairs])
         logits = torch.stack([o[0, q] if o.dim() == 3 else o[q] for _, o in pairs])
+
+        if dense is not None:
+            dense_logits, tokens = dense
+            logits = torch.cat([dense_logits[tokens[q]][None], logits])
+            names = ["encoder"] + names
 
         feats = self.mask_features[0] if self.mask_features.dim() == 4 else self.mask_features
         s, d, c = dec.shape
@@ -344,6 +389,12 @@ class _StageCapture:
 
         mask_scores = score.reshape(s, d).t().cpu().numpy().astype(np.float32)
         mask_areas = area.reshape(s, d).t().cpu().numpy().astype(np.int32)
+        if dense is not None:
+            # the model builds no mask at the dense stage, and inventing one by
+            # running mask_embed there would just reproduce `interm`
+            nan = np.full((d, 1), np.nan, np.float32)
+            mask_scores = np.concatenate([nan, mask_scores], axis=1)
+            mask_areas = np.concatenate([np.zeros((d, 1), np.int32), mask_areas], axis=1)
 
         return StageTrace(
             stage_names=names,

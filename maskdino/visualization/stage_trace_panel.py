@@ -134,8 +134,10 @@ def _chart(st, trace, det, probs, classes, theme, score_threshold):
     # the score threshold the viewer is filtering on - context, not data
     ax.axhline(score_threshold, color=theme["muted"], linewidth=1.0, linestyle=":",
                alpha=0.8)
+    # right-aligned: the left end is where the encoder->interm drop lands
     ax.annotate(f"score threshold {score_threshold:.2f}",
-                xy=(0, score_threshold), xytext=(0, 4), textcoords="offset points",
+                xy=(trace.num_stages - 1, score_threshold), xytext=(0, 5),
+                textcoords="offset points", ha="right",
                 color=theme["muted"], fontsize=8)
 
     # where the leading class changes hands
@@ -216,9 +218,17 @@ but they are siblings, not a pipeline - `class_embed` never sees the mask. This
 chart puts the two readouts on one axis (both are probabilities) so the moment
 they stop agreeing is visible.
 
-- Stages run `interm` (two-stage query selection) -> `initial_pred` -> one per
-  decoder layer. `interm` and `initial_pred` read the same vector before any
-  decoder layer runs, so they are usually identical.
+- Stages run `encoder` -> `interm` -> `initial_pred` -> one per decoder layer.
+- **`encoder` and `interm` are the same classifier on the same token and still
+  disagree.** `encoder` is `class_embed(output_memory)` - the tensor two-stage
+  query selection runs its top-k on, and what the Encoder class map panel
+  shows. `interm` is the same thing behind an extra `decoder_norm` LayerNorm
+  that `forward_prediction_heads` applies. On this checkpoint that scales the
+  top class by ~0.62x and flips the winner outright in ~8% of detections, so a
+  value read off the class map will not match the second point on this chart.
+  The drop from the first to the second point is that LayerNorm, not a decision.
+- The `encoder` stage has no mask score: the model never builds a mask there,
+  so the mask track starts at `interm`.
 - **A flat mask track with a wandering class track is the signature case**: the
   segmentation was right the whole time and the classifier talked itself out of
   the label. Nothing in the loss penalises that contradiction.

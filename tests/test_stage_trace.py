@@ -38,7 +38,8 @@ class _ToyPredictor(torch.nn.Module):
         self.initial_pred = with_initial
 
     def forward(self, x, mask_features, masks=None, targets=None):
-        self.class_embed(torch.randn(1, DENSE_TOKENS, DIM))       # dense call
+        if self.two_stage:
+            self.class_embed(torch.randn(1, DENSE_TOKENS, DIM))   # dense call
         n_lead = 2 if self.with_initial else 1
         for _ in range(n_lead + self.num_layers):
             self.class_embed(torch.randn(1, NQ, DIM))
@@ -84,19 +85,32 @@ def test_capture_is_pure_hooks_and_leaves_nothing_behind():
     assert predictor._forward_pre_hooks == {}
 
 
-def test_dense_encoder_call_is_excluded_from_the_stages():
+def test_dense_encoder_call_becomes_the_first_stage():
+    """The dense call is at a different sequence length and a different
+    normalization from the per-query stages, so it is carried as its own
+    `encoder` stage rather than silently dropped or merged with `interm`."""
     model, predictor = _toy_model()
     cap = _run(model, predictor)
     trace = cap.record(_instances([0, 1], [0.9, 0.8]))
-    # 2 leading stages + LAYERS; the DENSE_TOKENS call must not appear
-    assert trace.num_stages == 2 + LAYERS
-    assert trace.class_logits.shape == (2, 2 + LAYERS, NCLS)
+    assert trace.stage_names[0] == "encoder"
+    assert trace.num_stages == 1 + 2 + LAYERS
+    assert trace.class_logits.shape == (2, 1 + 2 + LAYERS, NCLS)
+
+
+def test_encoder_stage_carries_no_mask():
+    """The model never builds a mask at the dense stage; inventing one by
+    running mask_embed there would just reproduce `interm`."""
+    model, predictor = _toy_model()
+    trace = _run(model, predictor).record(_instances([0], [0.9]))
+    assert np.isnan(trace.mask_scores[0, 0])
+    assert np.isfinite(trace.mask_scores[0, 1:]).all()
 
 
 def test_stage_names_follow_the_decoder_call_order():
     model, predictor = _toy_model()
     trace = _run(model, predictor).record(_instances([0], [0.9]))
-    assert trace.stage_names == ["interm", "initial"] + [f"layer{i}" for i in range(LAYERS)]
+    assert trace.stage_names == ["encoder", "interm", "initial"] + \
+        [f"layer{i}" for i in range(LAYERS)]
 
 
 def test_stage_names_without_initial_pred():
@@ -105,7 +119,8 @@ def test_stage_names_without_initial_pred():
     reads the predictor's two_stage / initial_pred flags instead."""
     model, predictor = _toy_model(with_initial=False)
     trace = _run(model, predictor).record(_instances([0], [0.9]))
-    assert trace.stage_names == ["interm"] + [f"layer{i}" for i in range(LAYERS)]
+    assert trace.stage_names == ["encoder", "interm"] + \
+        [f"layer{i}" for i in range(LAYERS)]
 
 
 def test_mask_features_are_captured_from_the_predictor_call():
@@ -155,11 +170,12 @@ def test_record_dedupes_queries_and_honours_max_detections():
 def test_mask_scores_and_areas_are_per_stage_and_finite():
     model, predictor = _toy_model()
     trace = _run(model, predictor).record(_instances([0, 5], [0.9, 0.8]))
-    assert trace.mask_scores.shape == (2, 2 + LAYERS)
-    assert trace.mask_areas.shape == (2, 2 + LAYERS)
-    assert np.isfinite(trace.mask_scores).all()
+    assert trace.mask_scores.shape == (2, 1 + 2 + LAYERS)
+    assert trace.mask_areas.shape == (2, 1 + 2 + LAYERS)
+    real = trace.mask_scores[:, 1:]   # the encoder stage is NaN by design
+    assert np.isfinite(real).all()
     # a mask score is a mean sigmoid over the foreground, so it lives in (0.5, 1]
-    assert ((trace.mask_scores > 0.5) & (trace.mask_scores <= 1.0)).all()
+    assert ((real > 0.5) & (real <= 1.0)).all()
 
 
 def test_mask_score_matches_instance_inference_arithmetic():
@@ -191,7 +207,8 @@ def test_divergence_reports_the_stage_where_the_lead_changes():
     trace.class_names = [f"c{i}" for i in range(NCLS)]
 
     assert trace.divergence(0) == (3, trace.stage_names[3], "c0", "c1")
-    np.testing.assert_array_equal(trace.winner_per_stage(0), [0, 0, 0, 1, 1, 1])
+    expected = [0] * 3 + [1] * (trace.num_stages - 3)
+    np.testing.assert_array_equal(trace.winner_per_stage(0), expected)
 
 
 def test_divergence_is_none_when_one_class_leads_throughout():
@@ -410,9 +427,11 @@ def _trace_with_winners(winner_per_stage, scores=None):
     return trace
 
 
-def test_encoder_stage_is_interm_when_two_stage_is_on():
-    trace = _trace_with_winners([0] * (2 + LAYERS))
-    assert trace.stage_names[trace.encoder_stage()] == "interm"
+def test_encoder_stage_prefers_the_dense_readout_over_interm():
+    """Query selection gates on the dense scores, so that - not interm, which
+    sits behind an extra LayerNorm - is the encoder's operative verdict."""
+    trace = _trace_with_winners([0] * (1 + 2 + LAYERS))
+    assert trace.stage_names[trace.encoder_stage()] == "encoder"
 
 
 def test_no_encoder_stage_without_two_stage():
@@ -425,17 +444,17 @@ def test_no_encoder_stage_without_two_stage():
 
 
 def test_agreement_tracks_whether_the_encoder_label_survives():
-    kept = _trace_with_winners([1] * (2 + LAYERS))
+    kept = _trace_with_winners([1] * (1 + 2 + LAYERS))
     assert kept.agrees_with_final(0) is True
     assert kept.agreement_rate() == (1, 1)
 
-    flipped = _trace_with_winners([1, 1, 1, 2, 2, 2])
+    flipped = _trace_with_winners([1, 1, 1, 2, 2, 2, 2])
     assert flipped.agrees_with_final(0) is False
     assert flipped.agreement_rate() == (0, 1)
 
 
 def test_agreement_rate_honours_min_score():
-    trace = _trace_with_winners([1] * (2 + LAYERS), scores=[0.9, 0.2, 0.7])
+    trace = _trace_with_winners([1] * (1 + 2 + LAYERS), scores=[0.9, 0.2, 0.7])
     assert trace.agreement_rate() == (3, 3)
     assert trace.agreement_rate(min_score=0.5) == (2, 2)
     assert trace.agreement_rate(min_score=0.99) == (0, 0)
@@ -444,7 +463,7 @@ def test_agreement_rate_honours_min_score():
 def test_stage_agreement_matches_agreement_rate_at_the_encoder_stage():
     """The two must describe the same population - they disagreed when
     stage_agreement had no score filter, and the numbers were not comparable."""
-    trace = _trace_with_winners([1, 1, 1, 2, 2, 2], scores=[0.9, 0.2, 0.7])
+    trace = _trace_with_winners([1, 1, 1, 2, 2, 2, 2], scores=[0.9, 0.2, 0.7])
     for thresh in (None, 0.5, 0.6):
         n_agree, n_total = trace.agreement_rate(min_score=thresh)
         share = trace.stage_agreement(min_score=thresh)[trace.encoder_stage()]
@@ -453,5 +472,5 @@ def test_stage_agreement_matches_agreement_rate_at_the_encoder_stage():
 
 
 def test_stage_agreement_is_one_at_the_final_stage():
-    trace = _trace_with_winners([0, 1, 2, 3, 3, 3], scores=[0.9, 0.8])
+    trace = _trace_with_winners([0, 1, 2, 3, 3, 3, 3], scores=[0.9, 0.8])
     assert trace.stage_agreement()[-1] == pytest.approx(1.0)
