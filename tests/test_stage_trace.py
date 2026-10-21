@@ -286,7 +286,7 @@ class _FakeStreamlit:
     def pyplot(self, fig, **kw):
         self.figures.append(fig)
 
-    def metric(self, label, value, delta=None):
+    def metric(self, label, value, delta=None, **kw):
         self.metrics.append((label, value))
 
     def dataframe(self, df, **kw):
@@ -320,6 +320,25 @@ def _panel_trace():
     trace.class_logits = logits
     trace.class_names = [f"c{i}" for i in range(NCLS)]
     return trace
+
+
+def test_panel_renders_the_agreement_metric_above_the_chart(panel):
+    """The agreement row only renders for detections above the threshold - the
+    other panel tests use a 0.44-score detection and hit the early return."""
+    mod, st = panel
+    trace = _panel_trace()
+    trace.scores = np.array([0.9], np.float32)
+    mod.render_stage_trace_panel(trace, score_threshold=0.5)
+    assert ("encoder label kept", "0%") in st.metrics, \
+        "this trace flips at stage 3, so the encoder label is not kept"
+    assert any("does not" in c for c in st.captions)
+
+
+def test_panel_agreement_row_is_skipped_below_the_threshold(panel):
+    mod, st = panel
+    mod.render_stage_trace_panel(_panel_trace(), score_threshold=0.5)  # score 0.44
+    assert not any(m[0] == "encoder label kept" for m in st.metrics)
+    assert any("No detection above" in c for c in st.captions)
 
 
 def test_panel_renders_a_chart_with_legend_and_table(panel):
@@ -371,3 +390,68 @@ def test_panel_handles_an_empty_trace(panel):
     mod.render_stage_trace_panel(trace)
     assert st.figures == []
     assert any("No detections" in c for c in st.captions)
+
+
+# ---------------------------------------------------------------- agreement
+
+
+def _trace_with_winners(winner_per_stage, scores=None):
+    """A trace whose leading class at each stage is pinned by hand."""
+    model, predictor = _toy_model()
+    n = len(scores) if scores is not None else 1
+    trace = _run(model, predictor).record(
+        _instances(list(range(n)), scores if scores is not None else [0.9]))
+    logits = np.full((n, trace.num_stages, NCLS), -5.0, np.float32)
+    for d in range(n):
+        for s, w in enumerate(winner_per_stage):
+            logits[d, s, w] = 5.0
+    trace.class_logits = logits
+    trace.class_names = [f"c{i}" for i in range(NCLS)]
+    return trace
+
+
+def test_encoder_stage_is_interm_when_two_stage_is_on():
+    trace = _trace_with_winners([0] * (2 + LAYERS))
+    assert trace.stage_names[trace.encoder_stage()] == "interm"
+
+
+def test_no_encoder_stage_without_two_stage():
+    model, predictor = _toy_model()
+    predictor.two_stage = False
+    trace = _run(model, predictor).record(_instances([0], [0.9]))
+    assert trace.encoder_stage() is None
+    assert trace.agrees_with_final(0) is None
+    assert trace.agreement_rate() == (0, 0)
+
+
+def test_agreement_tracks_whether_the_encoder_label_survives():
+    kept = _trace_with_winners([1] * (2 + LAYERS))
+    assert kept.agrees_with_final(0) is True
+    assert kept.agreement_rate() == (1, 1)
+
+    flipped = _trace_with_winners([1, 1, 1, 2, 2, 2])
+    assert flipped.agrees_with_final(0) is False
+    assert flipped.agreement_rate() == (0, 1)
+
+
+def test_agreement_rate_honours_min_score():
+    trace = _trace_with_winners([1] * (2 + LAYERS), scores=[0.9, 0.2, 0.7])
+    assert trace.agreement_rate() == (3, 3)
+    assert trace.agreement_rate(min_score=0.5) == (2, 2)
+    assert trace.agreement_rate(min_score=0.99) == (0, 0)
+
+
+def test_stage_agreement_matches_agreement_rate_at_the_encoder_stage():
+    """The two must describe the same population - they disagreed when
+    stage_agreement had no score filter, and the numbers were not comparable."""
+    trace = _trace_with_winners([1, 1, 1, 2, 2, 2], scores=[0.9, 0.2, 0.7])
+    for thresh in (None, 0.5, 0.6):
+        n_agree, n_total = trace.agreement_rate(min_score=thresh)
+        share = trace.stage_agreement(min_score=thresh)[trace.encoder_stage()]
+        expected = n_agree / n_total if n_total else 0.0
+        assert share == pytest.approx(expected), f"mismatch at min_score={thresh}"
+
+
+def test_stage_agreement_is_one_at_the_final_stage():
+    trace = _trace_with_winners([0, 1, 2, 3, 3, 3], scores=[0.9, 0.8])
+    assert trace.stage_agreement()[-1] == pytest.approx(1.0)

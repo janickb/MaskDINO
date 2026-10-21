@@ -135,6 +135,56 @@ class StageTrace:
                         self.class_name(win[s - 1]), self.class_name(win[s]))
         return None
 
+    def encoder_stage(self):
+        """Index of the encoder-level readout.
+
+        `interm` is `class_embed` on the gathered encoder memory tokens, before
+        any decoder layer runs - the encoder's own verdict on the query it just
+        selected. Returns None when TWO_STAGE is off, in which case there is no
+        encoder-level per-query prediction to compare against.
+        """
+        return self.stage_names.index("interm") if "interm" in self.stage_names else None
+
+    def agrees_with_final(self, det):
+        """Does the encoder's leading class survive to the last stage?
+
+        None when there is no encoder stage to compare (see `encoder_stage`).
+        """
+        enc = self.encoder_stage()
+        if enc is None:
+            return None
+        win = self.winner_per_stage(det)
+        return bool(win[enc] == win[-1])
+
+    def agreement_rate(self, min_score=None):
+        """(n_agree, n_total) over traced detections scoring above `min_score`.
+
+        Measures how often the decoder *keeps* the encoder's label rather than
+        overturning it. A low rate is not itself a fault - the decoder exists to
+        refine - but paired with a flat mask track it says the refinement is
+        changing the label while the segmentation stands still.
+        """
+        if self.encoder_stage() is None or len(self) == 0:
+            return 0, 0
+        dets = [d for d in range(len(self))
+                if min_score is None or float(self.scores[d]) > min_score]
+        return sum(1 for d in dets if self.agrees_with_final(d)), len(dets)
+
+    def stage_agreement(self, min_score=None):
+        """(S,) fraction of traced detections whose winner at each stage equals
+        their own final winner - i.e. where the decision settles.
+
+        Takes the same `min_score` filter as `agreement_rate` so the two
+        describe the same population; without it the low-confidence tail of the
+        traced set dominates and the numbers are not comparable.
+        """
+        dets = [d for d in range(len(self))
+                if min_score is None or float(self.scores[d]) > min_score]
+        if not dets:
+            return np.zeros(self.num_stages, np.float32)
+        wins = np.stack([self.winner_per_stage(d) for d in dets])
+        return (wins == wins[:, -1:]).mean(0).astype(np.float32)
+
     def final_score_check(self, det):
         """(reconstructed, reported) final score.
 

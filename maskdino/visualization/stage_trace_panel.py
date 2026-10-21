@@ -65,6 +65,8 @@ def render_stage_trace_panel(trace, score_threshold=0.5, key_prefix="trace"):
         help="Each entry is one decoder query, identified by the detection it produced.",
     )
 
+    _agreement(st, trace, det, score_threshold)
+
     probs = trace.class_probs(det)
     classes = trace.top_classes(det, k=2)[:MAX_CLASS_SERIES]
     theme = _theme(st)
@@ -84,6 +86,33 @@ def render_stage_trace_panel(trace, score_threshold=0.5, key_prefix="trace"):
 
     with st.expander("What am I looking at?"):
         st.markdown(_EXPLAINER)
+
+
+def _agreement(st, trace, det, score_threshold):
+    """How often the encoder's label survives the decoder, over this frame."""
+    n_agree, n_total = trace.agreement_rate(min_score=score_threshold)
+    if n_total == 0:
+        st.caption(
+            "No encoder-level prediction to compare against "
+            "(TWO_STAGE is off, so there is no `interm` stage)."
+            if trace.encoder_stage() is None else
+            f"No detection above the score threshold ({score_threshold:.2f})."
+        )
+        return
+
+    this = trace.agrees_with_final(det)
+    pct = 100.0 * n_agree / n_total
+    c1, c2 = st.columns([1, 2])
+    c1.metric("encoder label kept", f"{pct:.0f}%", help=(
+        "Share of this frame's detections whose leading class at `interm` - the "
+        "encoder's own verdict on the query it selected - is still leading at the "
+        "last decoder layer."))
+    c2.caption(
+        f"{n_agree} of {n_total} detections above {score_threshold:.2f} keep the "
+        f"encoder's label through all {trace.num_stages} stages. "
+        + ("**This detection keeps it.**" if this else
+           "**This detection does not** - the decoder overturned the encoder.")
+    )
 
 
 def _chart(st, trace, det, probs, classes, theme, score_threshold):
