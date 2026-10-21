@@ -565,6 +565,13 @@ class MaskDINO(nn.Module):
             labels_per_image = labels_per_image[keep]
             mask_pred = mask_pred[keep]
         result = Instances(image_size)
+        # Which decoder query each kept detection came from - the only link from a
+        # drawn instance back into the decoder, used by
+        # maskdino/visualization/stage_trace.py to read that query's per-stage
+        # class and mask confidence. topk_indices is already the query index here
+        # (// num_classes above), and takes the same `keep` filter the other fields
+        # take under panoptic_on. Rides through the NMS slice below like any field.
+        result.query_indices = topk_indices[keep] if self.panoptic_on else topk_indices
         # mask (before sigmoid)
         result.pred_masks = (mask_pred > 0).float()
         # half mask box half pred box
