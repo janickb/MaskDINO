@@ -24,7 +24,11 @@ from detectron2.data import DatasetCatalog
 from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.structures import Boxes, Instances
 
-from maskdino import add_maskdino_config, set_num_classes_from_metadata
+from maskdino import (
+    add_maskdino_config,
+    apply_test_sample_stride,
+    set_num_classes_from_metadata,
+)
 from maskdino.evaluation.hungarian_instance_evaluation import HungarianInstanceEvaluator
 
 
@@ -43,7 +47,11 @@ def main():
     add_deeplab_config(cfg)
     add_maskdino_config(cfg)
     cfg.merge_from_file(args.config_file)
-    set_num_classes_from_metadata(cfg, args.dataset or cfg.DATASETS.TEST[0])
+    dataset = args.dataset or cfg.DATASETS.TEST[0]
+    set_num_classes_from_metadata(cfg, dataset)
+    # Keep DATASETS.TEST consistent with --dataset: apply_test_sample_stride below
+    # (and the evaluator's own cfg reads) go through DATASETS.TEST, not this local.
+    cfg.DATASETS.TEST = (dataset,)
     he = cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
     he.ENABLED = True
     if args.score_thresh is not None:
@@ -55,8 +63,15 @@ def main():
         cfg.INPUT.MIN_VISIBILITY = args.min_visibility
     cfg.freeze()
 
-    dataset = args.dataset or cfg.DATASETS.TEST[0]
-    fname_by_id = {d["image_id"]: d["file_name"] for d in DatasetCatalog.get(dataset)}
+    # The cached predictions were produced by a run that applied
+    # DATASETS.TEST_SAMPLE_STRIDE, so the GT must be subsampled the same way here.
+    apply_test_sample_stride(cfg)
+    gt = DatasetCatalog.get(dataset)
+    fname_by_id = {d["image_id"]: d["file_name"] for d in gt}
+    if cfg.DATASETS.TEST_SAMPLE_STRIDE > 1:
+        print(f"DATASETS.TEST_SAMPLE_STRIDE={cfg.DATASETS.TEST_SAMPLE_STRIDE}: "
+              f"evaluating against {len(gt)} of every {cfg.DATASETS.TEST_SAMPLE_STRIDE}th "
+              f"frame, matching the cached run")
 
     preds = torch.load(args.predictions, weights_only=False)
     # pre-filter by score before decoding masks (the evaluator applies the same
