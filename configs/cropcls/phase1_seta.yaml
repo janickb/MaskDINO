@@ -1,0 +1,38 @@
+# Phase-1 classifier: 8 set-A classes, masks from the frozen single-class MaskDINO.
+# See spec_cropcls.md. The detector side is inherited by merging the run's own config.yaml.
+
+detector_checkpoint: /home/janick.bilang/dev/MaskDINO/runs/20261007130733_single_class_v2/model_final.pth
+detector_score_thresh: 0.5
+
+# the class count is derived from train_dataset's thing_classes, never stated
+train_dataset: train_seta_mm
+val_dataset: val_seta_mm
+
+augment_frames: false   # detector sees clean frames; augmentation is crop-level
+
+crop_size: 224
+rotations: [0, 90, 180, 270]
+
+iou_floor: 0.5
+runner_up_ceiling: 0.2
+
+# the classifier's trunk (any timm backbone). MaskDINO stays frozen regardless.
+trunk: resnet50
+trunk_pretrained: true
+freeze_trunk: false
+
+# classifier checkpoint to init/resume from, and the one --eval-only scores. Empty means
+# "start from the trunk's pretrained weights"; --eval-only then falls back to
+# <output_dir>/model_final.pth.
+weights: ""
+
+base_lr: 0.0001
+weight_decay: 0.05
+max_iter: 20000
+ims_per_batch: 4
+warmup_iters: 250
+checkpoint_period: 2000
+eval_period: 1000
+amp: true
+
+output_dir: runs/cropcls_phase1_seta
