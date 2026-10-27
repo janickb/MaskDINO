@@ -1,59 +1,42 @@
-# Specification: [Feature Name]
+# <feature> — spec
 
-## 1. Context & Goals
-* **Problem:** Briefly describe the issue this feature solves.
-* **Objective:** What does success look like in 1-2 sentences?
-* **User Story:** As a [user], I want to [action] so that [benefit].
+Replace every `<angle bracket>`. Delete a section that is genuinely empty rather than
+writing "N/A". Target: one screen.
 
-## 2. Technical Architecture & Data Flow
-*High-level overview of how the feature plugs into the existing codebase.*
+## 1. Ask — verbatim
 
-### Components impacted:
-- `src/components/NewFeature.tsx` (To be created)
-- `src/server/router.ts` (To be modified)
+> <Paste the request unedited: typos, tone and all. Never reword it. Never tick it.>
 
-### Data Models / Schema:
-```typescript
-// Define exact types or DB schemas to prevent the AI from guessing field names
-interface FeaturePayload {
-  id: string;
-  createdAt: string;
-  status: 'pending' | 'success' | 'failed';
-}
-```
+This is a quotation, not a worklist. It is what review checks against — paraphrase here and
+the review only proves the spec agrees with the code it produced.
 
-## 3. Core Requirements & Logic
-*Be incredibly literal here. Use concrete if/then logic.*
+## 2. Decision
 
-- [ ] **Input Validation:** Reject payloads if `id` is missing with a `400 Bad Request`.
-- [ ] **State Machine:** Moving status from `pending` to `success` must trigger an email alert.
-- [ ] **Edge Cases:** If the network drops during the transaction, retry exactly 3 times before failing.
+<What gets built, in 2-4 sentences. Name the one design choice that was not obvious and say
+why the alternative lost. Cite code as `path.py:123`, do not re-describe it.>
 
-## 4. API Endpoints / Interface Definitions
-*Define the exact contract the AI must build.*
+## 3. Requirements
 
-- **Path:** `POST /api/v1/feature`
-- **Request Body:** `FeaturePayload`
-- **Success Response:** `200 OK` -> `{ success: true }`
-- **Error Responses:** `401 Unauthorized`, `422 Unprocessable Entity`
+Literal. Every threshold carries its number **and its direction**.
 
-## 5. Definition of Done (DoD) & Testing
-*AI will stop coding once these criteria are met.*
+- [ ] **<label>:** <"upsample the prediction, never downsample the GT" — not "handle resolution">
+- [ ] **<label>:** <...>
 
-- [ ] Unit tests cover all 3 status changes (`pending`, `success`, `failed`).
-- [ ] Test coverage for the new router file is >90%.
-- [ ] No `any` types used (Strict TypeScript compliance).
-- [ ] The feature passes `npm run build` without warnings.
+## 4. Done when
 
-## 6. Implementation Checklist (The TODO)
-*The step-by-step roadmap for the AI.*
+Each item measurable, and naming the metric it is measured by.
 
-- [ ] **Phase 1: Database & Types**
-  - [ ] Create the database migration for the new table.
-  - [ ] Export the updated Prisma types.
-- [ ] **Phase 2: Backend API**
-  - [ ] Implement the `POST /api/v1/feature` endpoint.
-  - [ ] Add input validation middleware.
-- [ ] **Phase 3: Frontend UI**
-  - [ ] Build the interactive form component.
-  - [ ] Connect the form to the backend API using React Query.
+- [ ] **<claim>** — <metric> <number>, baseline <number>. Confound avoided: <what the obvious
+      metric would have flattered, and by how much>.
+      **Verify:** `tests/test_<x>.py` — <the assertion that fails if this breaks>
+
+## 5. Out of scope (explicit)
+
+- <what must NOT be built, changed or deleted. Name files or directories.>
+
+<!-- What the reviewers check:
+  - §1 unticked and unedited, always.
+  - Every §4 item has a **Verify:** clause naming a real file and a real assertion.
+    A clause that cannot fail is a finding.
+  - Rank by classaware_f1 (score_mode=detector), never crop top-1.
+  - Every number names its iteration; every timing names the machine and its load. -->

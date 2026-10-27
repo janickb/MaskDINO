@@ -30,6 +30,13 @@ This is a **git worktree**. Run everything from `/home/janick.bilang/dev/MaskDIN
   pytest; `/usr/bin/pytest` has no torch; putting `/usr/lib/python3/dist-packages` on
   `PYTHONPATH` shadows the venv's numpy and breaks the torch import.
 - `testpaths = ["tests"]`, flat `tests/`, no `conftest.py`. Lint: `ruff`.
+- **`training/images` is a per-host symlink and nothing warns loudly if it is missing** - every
+  dataset registration is skipped with an info-level line and `DatasetCatalog.list()` comes back
+  without `train_seta_mm`, so the failure looks like "dataset not registered", not "no symlink".
+  On `dbe-cia-sl19-01` it points at `images_lambdablade-6000` (1024 frames, frame-name digest
+  `d0cd49821f66`). The sibling `images_dgx-a100` is a **different** 1024-frame render of the same
+  scene set, and a run's `config.json` records only the dataset *name*, so it does not identify
+  which render was used - check the digest before comparing numbers across hosts.
 - Classifier entry point: `train_cropcls.py`. Runs land in `runs/<name>/`.
 - **Expect this warning and do not act on it:** `MultiScaleDeformableAttention CUDA op is not
   compiled; using the pure-PyTorch fallback`. The fallback is **deliberate** — the main
