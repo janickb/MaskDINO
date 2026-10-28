@@ -63,7 +63,9 @@ shape matching and forcep03/04 may be near-indistinguishable by construction - t
       its inference condition (where its 97.9% class-agnostic recall was measured) and makes its
       output deterministic per frame, hence cacheable. Crop-level equivalents:
       rotation 0/90/180/270 (lossless on a square crop, and 4x the classifier samples per
-      detector forward); `RandomBrightness/Contrast/Saturation/Lighting` at the same ranges as
+      detector forward - this 4x-per-forward emission describes the **live** path only; the
+      static-cache path in [spec_static_crops.md](spec_static_crops.md) samples one rotation
+      per draw instead, which costs no throughput because the forward is already amortised); `RandomBrightness/Contrast/Saturation/Lighting` at the same ranges as
       `build_transform_gen`, applied pre-blackout; optional mask dilate/erode in place of the mask-shape
       variation frame jitter used to produce incidentally. No flipping - instruments have fixed
       handedness. Controlled by `augment_frames` (default `false`); set it `true` to A/B against
@@ -125,7 +127,9 @@ shape matching and forcep03/04 may be near-indistinguishable by construction - t
       machine, so it runs the pure-PyTorch fallback. At 20,000 iterations that is ~18.6 h of
       data generation alone.
 
-- [ ] **The adaptation** (follows from the timing result, implemented in part):
+- [ ] **The adaptation** (follows from the timing result, implemented in part).
+      Superseded in design by [spec_static_crops.md](spec_static_crops.md) - read that
+      for what is actually being built; the sub-items below are the original sketch:
       - [x] drop frame-level augmentation so the detector sees clean frames -> its output is
             deterministic per frame (`augment_frames: false`; removes the 189 ms/frame stage)
       - [ ] cache crops keyed by frame filename: one detector forward per frame, ever.
@@ -227,7 +231,9 @@ tests/test_cropcls_{crops,assign,detector,timing}.py
       those four are lossless pixel permutations and the axis-aligned bbox is symmetric under them,
       so the result is identical to rotating the frame - but one detector forward then yields 4x the
       classifier samples instead of one rotation's worth. Since the detector forward is the
-      expensive stage, this is where the throughput is. Keep the frame-level photometric augs
+      expensive stage, this is where the throughput is. (Live path only - the static cache in
+      [spec_static_crops.md](spec_static_crops.md) samples one rotation per draw, because
+      bundling all four in a batch is what correlates the BatchNorm statistics.) Keep the frame-level photometric augs
       (`RandomBrightness/Contrast/Saturation/Lighting`) as they are - they survive the crop
       untouched. Do **not** add flipping: instruments have fixed handedness, so a mirrored scalpel
       is an invalid shape (see the comment in `build_transform_gen`). Note the four rotations of one

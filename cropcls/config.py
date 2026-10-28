@@ -60,10 +60,23 @@ class CropClsConfig:
                                  # background - tests whether surrounding context helps,
                                  # which the spec's blackout throws away by design.
 
+    # --- static crop cache (spec_static_crops.md) ----------------------------
+    # Directory holding the extracted patches + manifest. Empty = live pipeline.
+    crop_cache: str = ""
+    # Patch bbox is the mask's tight box grown by this many px, so mask_dilate up to
+    # `margin` stays a load-time choice. Loading with mask_dilate > the MANIFEST's margin
+    # raises: trusting this field instead would clip silently.
+    margin: int = 32
+    # Batch size in CROPS for the static loader. ims_per_batch counts FRAMES and keeps
+    # that meaning; the two units must not be confused.
+    crops_per_batch: int = 64
+
     # --- crops ---------------------------------------------------------------
     crop_size: int = 224
     # Lossless pixel permutations on a square canvas; applied after cropping so one
-    # detector forward yields 4x the classifier samples (spec section 6, step 5).
+    # detector forward yields 4x the classifier samples (spec section 6, step 5). Live path
+    # only - the static cache (spec_static_crops.md) samples one rotation per draw, because
+    # bundling all four in one batch correlates the BatchNorm statistics.
     rotations: list[int] = field(default_factory=lambda: [0, 90, 180, 270])
     pixel_mean: list[float] = field(default_factory=lambda: list(PIXEL_MEAN))
     pixel_std: list[float] = field(default_factory=lambda: list(PIXEL_STD))
