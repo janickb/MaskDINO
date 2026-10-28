@@ -5,6 +5,7 @@ trigger `import maskdino` (which registers datasets from absolute data paths).
 val_loss.py only imports torch/detectron2, so this is safe either way, but
 file-path loading keeps the pattern consistent with the rest of this suite.
 """
+import ast
 import importlib.util
 import os
 import sys
@@ -113,3 +114,103 @@ def test_empty_loader_warns_and_skips():
         hook.trainer = _FakeTrainer(model, storage, 0, 100)
         hook.after_step()
     assert "validation_loss" not in storage.histories()
+
+
+# ---------------------------------------------------------------------------
+# DDP: the training-mode loss runs torch.distributed.all_reduce(num_masks) inside
+# SetCriterion.forward, so one forward pass == one collective.
+# Every rank must therefore run the SAME number of val batches, or the collectives
+# mismatch and the job deadlocks until gloo's 30-minute timeout.
+#
+# build_detection_test_loader shards the val set with InferenceSampler, which gives the
+# remainder to the lower ranks - so shards are uneven whenever len(dataset) is not
+# divisible by the world size (3 images over 2 ranks -> 2 and 1). Observed in practice
+# as: rank 0 pinned at 100% GPU inside all_reduce, rank 1 idle, both logs frozen.
+# ---------------------------------------------------------------------------
+
+
+class _CountingLoader:
+    """Loader of `n` dummy batches that records how many were consumed."""
+
+    def __init__(self, n):
+        self._n = n
+        self.consumed = 0
+
+    def __len__(self):
+        return self._n
+
+    def __iter__(self):
+        for _ in range(self._n):
+            self.consumed += 1
+            yield [{}]
+
+
+def _hook_with(loader, gathered_lengths, monkeypatch):
+    # val_loss_mod is the file-path-loaded module from the top of this file; importing
+    # maskdino.solver.val_loss instead would pull in the maskdino package.
+    hook = val_loss_mod.ValidationLossHook(period=1, loader=loader)
+    monkeypatch.setattr(val_loss_mod.comm, "all_gather", lambda v: list(gathered_lengths))
+    return hook
+
+
+def test_every_rank_runs_the_global_minimum_batch_count(monkeypatch):
+    """This rank has 2 batches, the other has 1 -> both must run 1."""
+    loader = _CountingLoader(2)
+    hook = _hook_with(loader, [2, 1], monkeypatch)
+    assert hook._steps_this_rank() == 1
+
+
+def test_even_shards_are_not_truncated(monkeypatch):
+    loader = _CountingLoader(128)
+    hook = _hook_with(loader, [128, 128], monkeypatch)
+    assert hook._steps_this_rank() == 128
+
+
+def test_single_process_is_unaffected(monkeypatch):
+    loader = _CountingLoader(7)
+    hook = _hook_with(loader, [7], monkeypatch)
+    assert hook._steps_this_rank() == 7
+
+
+def test_loader_without_len_disables_truncation(monkeypatch):
+    class _NoLen:
+        def __iter__(self):
+            return iter([])
+
+    hook = val_loss_mod.ValidationLossHook(period=1, loader=_NoLen())
+    assert hook._steps_this_rank() is None
+
+
+def test_criterion_really_contains_a_collective():
+    """If this ever stops being true the truncation above is no longer needed - but
+    while it holds, unequal batch counts across ranks are a hard deadlock.
+
+    Parsed from source rather than imported: maskdino/modeling/criterion.py uses
+    relative imports and pulls in maskdino.utils, so reaching SetCriterion means
+    `import maskdino` - which registers datasets from absolute data paths and is what
+    this suite's file-path loading exists to avoid (see the module docstring).
+    """
+    src = os.path.join(_HERE, "..", "maskdino", "modeling", "criterion.py")
+    with open(src) as fh:
+        tree = ast.parse(fh.read(), filename=src)
+
+    forward = next(
+        (
+            fn
+            for cls in tree.body
+            if isinstance(cls, ast.ClassDef) and cls.name == "SetCriterion"
+            for fn in cls.body
+            if isinstance(fn, ast.FunctionDef) and fn.name == "forward"
+        ),
+        None,
+    )
+    assert forward is not None, f"SetCriterion.forward not found in {src}"
+    calls = {
+        ast.unparse(node.func)
+        for node in ast.walk(forward)
+        if isinstance(node, ast.Call)
+    }
+    assert any("all_reduce" in c for c in calls), (
+        "SetCriterion.forward no longer runs a collective, so ValidationLossHook's "
+        "per-rank truncation (_steps_this_rank) may no longer be needed"
+    )

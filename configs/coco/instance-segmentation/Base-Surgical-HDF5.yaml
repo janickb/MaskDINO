@@ -1,0 +1,37 @@
+_BASE_: maskdino_R50_bs16_50ep_3s.yaml
+# Shared base for every surgical-tools run on the scene_generator HDF5 datasets.
+#
+# Holds ONLY what is a property of this data/eval setup rather than of a single
+# experiment: the mapper, the render resolution (train and test), the periodic-eval
+# subsample, the query count, and the Hungarian evaluator. Experiment knobs -
+# WEIGHTS, NUM_CLASSES, DATASETS, the SOLVER block, scale jitter, MIN_VISIBILITY,
+# FREEZE_AT, NMS_IOU, HUNGARIAN_EVAL.PERIOD - stay in the leaf configs, which differ
+# on all of them.
+#
+# It sits between the leaf configs and maskdino_R50_bs16_50ep_3s.yaml deliberately:
+# that file is also the published COCO config in README.md's results table, so
+# surgical-only defaults must not land in it.
+MODEL:
+  MaskDINO:
+    # 100, not COCO's 300: a surgical frame holds a handful of instruments, and the
+    # 300-query rows of the pretrained checkpoint are dropped on load either way.
+    NUM_OBJECT_QUERIES: 100
+    TEST:
+      HUNGARIAN_EVAL:
+        # Single-operating-point localization diagnostic + confusion matrix; writes
+        # inference/instance_matching_*.{csv,png}. Set PERIOD per config - it roughly
+        # doubles per-image eval cost, so it usually wants a multiple of EVAL_PERIOD.
+        ENABLED: True
+DATASETS:
+  # Periodic eval on every 4th val image; override to 1 for a full-set pass.
+  TEST_SAMPLE_STRIDE: 4
+INPUT:
+  DATASET_MAPPER_NAME: "hdf5_coco_instance"
+  # The renders are 1024x1024. IMAGE_SIZE drives the train-time
+  # ResizeScale/FixedSizeCrop; MIN_SIZE_TEST/MAX_SIZE_TEST drive the test mapper's
+  # ResizeShortestEdge (hdf5_coco_instance_dataset_mapper.py). All three must agree,
+  # or eval silently runs at a different resolution than training - detectron2's
+  # own defaults here are 800/1333, i.e. 0.78x.
+  IMAGE_SIZE: 1024
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TEST: 1024

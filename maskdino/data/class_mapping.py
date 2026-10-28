@@ -41,7 +41,12 @@ class ClassMapping:
     :meth:`from_state_dict` (from a checkpoint / sidecar).
     """
 
-    def __init__(self, contiguous_to_canonical: dict[int, dict[str, Any]]):
+    def __init__(
+        self,
+        contiguous_to_canonical: dict[int, dict[str, Any]],
+        *,
+        thing_dataset_id_to_contiguous_id: dict[int, int] | None = None,
+    ):
         self.contiguous_to_canonical: dict[int, dict[str, Any]] = {
             int(i): {"category_id": int(v["category_id"]), "name": str(v["name"])}
             for i, v in contiguous_to_canonical.items()
@@ -56,13 +61,21 @@ class ClassMapping:
         self.thing_classes: list[str] = [
             self.contiguous_to_canonical[i]["name"] for i in range(n)
         ]
-        self.thing_dataset_id_to_contiguous_id: dict[int, int] = {
-            self.contiguous_to_canonical[i]["category_id"]: i for i in range(n)
-        }
-        if len(self.thing_dataset_id_to_contiguous_id) != n:
-            raise ValueError(
-                f"duplicate canonical category_id in {self.contiguous_to_canonical}"
-            )
+        if thing_dataset_id_to_contiguous_id is not None:
+            # Explicit override: lets several canonical category_ids collapse onto
+            # the same contiguous id (see derive_single_class_mapping). The
+            # bijectivity check below only makes sense for the derived 1:1 case.
+            self.thing_dataset_id_to_contiguous_id: dict[int, int] = {
+                int(k): int(v) for k, v in thing_dataset_id_to_contiguous_id.items()
+            }
+        else:
+            self.thing_dataset_id_to_contiguous_id = {
+                self.contiguous_to_canonical[i]["category_id"]: i for i in range(n)
+            }
+            if len(self.thing_dataset_id_to_contiguous_id) != n:
+                raise ValueError(
+                    f"duplicate canonical category_id in {self.contiguous_to_canonical}"
+                )
 
     # -- lookups -----------------------------------------------------------------
     def canonical_id(self, contiguous_id: int) -> int:
@@ -193,6 +206,40 @@ def derive_class_mapping(instrument_classes: list[str]) -> ClassMapping:
     )
 
 
+_SINGLE_CLASS_CATEGORY_ID = -1  # placeholder, not a real instrument category_id
+_SINGLE_CLASS_NAME = "surgical-instruments"
+
+
+def derive_single_class_mapping(
+    instrument_classes: list[str], class_name: str = _SINGLE_CLASS_NAME
+) -> ClassMapping:
+    """Like :func:`derive_class_mapping`, but collapses every real instrument
+    category_id onto the single contiguous slot ``0``, named ``class_name``.
+
+    The slot's ``category_id`` is a fixed sentinel (``-1``), not a real
+    instrument id: two datasets with different instrument rosters (e.g. a
+    train pool vs a val split) must still derive an *equal* ``ClassMapping``,
+    since ``ClassMapping.__eq__`` compares ``contiguous_to_canonical``
+    (``assert_train_test_class_mapping_consistent`` relies on this). Picking a
+    real id would make that comparison dataset-dependent and fail spuriously.
+    """
+    if not instrument_classes:
+        raise ValueError("instrument_classes is empty")
+    real_ids = [
+        category_id
+        for category_id, name in enumerate(instrument_classes)
+        if category_id != 0 and not name.startswith(_UNUSED_PREFIX)
+    ]
+    if not real_ids:
+        raise ValueError(
+            f"no effective classes in {instrument_classes!r} (all background/unused_*)"
+        )
+    return ClassMapping(
+        {0: {"category_id": _SINGLE_CLASS_CATEGORY_ID, "name": class_name}},
+        thing_dataset_id_to_contiguous_id={cid: 0 for cid in real_ids},
+    )
+
+
 def remap_gt_category_ids(annotations: list[dict], cm: ClassMapping) -> None:
     """In place: rewrite each annotation's raw canonical ``category_id`` to its
     contiguous id. Raises ``ValueError`` on an id with no effective-class slot -
@@ -215,13 +262,25 @@ def remap_gt_category_ids(annotations: list[dict], cm: ClassMapping) -> None:
 def apply_class_mapping_to_metadata(name: str, cm: ClassMapping):
     """Set the compact class space (+ a ``class_mapping_entries`` marker) on a
     registered dataset's metadata. Superset of what the surgical registrars set
-    today, so re-registration with an identical mapping is a no-op."""
+    today, so re-registration with an identical mapping is a no-op.
+
+    ``thing_dataset_id_to_contiguous_id`` is rebuilt from ``contiguous_to_canonical``
+    rather than copied from ``cm`` directly: for a normal (bijective) mapping the
+    two are identical, but for a collapsed one (see derive_single_class_mapping)
+    ``cm``'s own map is many-to-one and dataset-dependent - storing that would make
+    ``ClassMapping.from_metadata()`` round-trips (the checkpoint sidecar,
+    assert_train_test_class_mapping_consistent) inconsistent across splits with
+    different instrument rosters. The full many-to-one map is only needed
+    transiently, in-process, to remap GT annotations at dataset-dict-build time."""
     from detectron2.data import MetadataCatalog
 
     md = MetadataCatalog.get(name)
     md.set(
         thing_classes=list(cm.thing_classes),
-        thing_dataset_id_to_contiguous_id=dict(cm.thing_dataset_id_to_contiguous_id),
+        thing_dataset_id_to_contiguous_id={
+            cm.contiguous_to_canonical[i]["category_id"]: i
+            for i in range(cm.num_classes)
+        },
         evaluator_type="coco",
         class_mapping_entries=cm.state_dict(),
     )
