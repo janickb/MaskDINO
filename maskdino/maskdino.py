@@ -568,9 +568,11 @@ class MaskDINO(nn.Module):
         # Which decoder query each kept detection came from - the only link from a
         # drawn instance back into the decoder, used by
         # maskdino/visualization/attention.py to attribute cross-attention to a
-        # detection. topk_indices is already the query index here (// num_classes
-        # above), and takes the same `keep` filter the other fields take under
-        # panoptic_on. Rides through the NMS slice below like any other field.
+        # detection, and by maskdino/visualization/stage_trace.py to read that
+        # query's per-stage class and mask confidence. topk_indices is already the
+        # query index here (// num_classes above), and takes the same `keep` filter
+        # the other fields take under panoptic_on. Rides through the NMS slice
+        # below like any other field.
         result.query_indices = topk_indices[keep] if self.panoptic_on else topk_indices
         # mask (before sigmoid)
         result.pred_masks = (mask_pred > 0).float()
