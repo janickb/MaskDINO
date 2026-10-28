@@ -1,0 +1,33 @@
+_BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+# --- Phase-2 augmentation wave, arm: CONTROL (no augmentation) ---------------
+# The zero rung: every photometric axis and the per-instance jitter at a no-op,
+# so this arm measures the pipeline with appearance augmentation switched off.
+# NOTE this is NOT the same baseline as
+# maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_control.yaml
+# (that one carries the old default dose 0.7-1.3 / 0.8-1.2 / LIGHTING 0.9), so the
+# 0.8783 +/- 0.0046 noise floor in appearance_aug_sweep_phase2.md does NOT apply
+# here - this wave needs its own floor from repeated seeds of this arm.#
+# Shared protocol (held identical across every arm in this wave): base config
+# above (encoder+decoder+head trainable, backbone frozen), DATASETS.TRAIN
+# reclass_setab_mm -> DATASETS.TEST val_setab_mm, COPY_PASTE.ENABLED True with
+# CLUSTER_PROB 1.0 and PERSPECTIVE.PROB 0.0. Scale / batch / iters / LR come from
+# that base config (no arm file sets them, so arms can only differ in their dose);
+# seed is set by tools/augmentation/run_aug_sweep.sh. Previous wave used
+# MAX_ITER 10000, IMS_PER_BATCH 3 (3 GPUs x 1 img), BASE_LR 1e-5,
+# MIN_SCALE/MAX_SCALE 1.0/1.0, TEST_SAMPLE_STRIDE 4; match
+# that or this wave is not comparable to appearance_aug_sweep_phase2.md.
+
+INPUT:
+  COPY_PASTE:
+    INSTANCE_JITTER:
+      BRIGHTNESS:  [1.0, 1.0]
+      CONTRAST:    [1.0, 1.0]
+      SATURATION:  [1.0, 1.0]
+      HUE_DEGREES: 0.0
+  PHOTOMETRIC:
+    BRIGHTNESS: [1.0, 1.0]
+    CONTRAST:   [1.0, 1.0]
+    SATURATION: [1.0, 1.0]
+    NOISE_PROB: 0.0
+    NOISE_STD:  [0.0, 0.0]
+OUTPUT_DIR: "runs/augexp_control"

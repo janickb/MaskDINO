@@ -5,6 +5,7 @@ don't trigger ``import maskdino`` (which registers datasets from absolute data
 paths). It has no maskdino-internal imports of its own, so this is purely to stay
 consistent with the rest of the test suite.
 """
+
 import importlib.util
 import os
 import random
@@ -17,7 +18,9 @@ import pytest
 from pycocotools import mask as mask_util
 
 _HERE = os.path.dirname(__file__)
-_MOD_PATH = os.path.join(_HERE, "..", "maskdino", "data", "augmentations", "copy_paste.py")
+_MOD_PATH = os.path.join(
+    _HERE, "..", "maskdino", "data", "augmentations", "copy_paste.py"
+)
 _spec = importlib.util.spec_from_file_location("copy_paste", _MOD_PATH)
 cp_mod = importlib.util.module_from_spec(_spec)
 sys.modules["copy_paste"] = cp_mod
@@ -109,6 +112,9 @@ def compositor_factory(tmp_path):
             feather_width_range=(2, 7),
             core_margin_px=2,
             image_format="BGR",
+            cluster_prob=0.0,
+            cluster_radius_fraction=0.25,
+            cluster_stray_fraction=0.2,
         )
         defaults.update(kwargs)
         return CopyPasteCompositor(sources, **defaults), sources
@@ -189,6 +195,115 @@ def test_modal_masks_never_overlap_across_paste_chronology(compositor_factory):
             assert not np.any(masks[i] & masks[j])
 
 
+def test_cluster_prob_zero_matches_uniform_path(compositor_factory):
+    # cluster_prob=0.0 (the fixture default) must be bit-identical to the
+    # pre-clustering uniform placement for the same seed - the one extra
+    # random.random() draw __call__ now always makes must not itself change
+    # *which* pixels get chosen, only that a fixed extra draw is consumed.
+    compositor, _ = compositor_factory(n_sources=5, min_instances=3, max_instances=3)
+    dest = _solid_image(64, 0)
+
+    random.seed(20)
+    _, anns_a = compositor(dest, [])
+    random.seed(20)
+    _, anns_b = compositor(dest, [])
+
+    for a, b in zip(anns_a, anns_b):
+        assert a["bbox"] == b["bbox"]
+
+
+def test_cluster_prob_one_concentrates_placements_near_center(compositor_factory):
+    # cluster_prob=1.0, cluster_stray_fraction=0.0 -> every instance is piled,
+    # so every pasted mask's centroid should land within a small multiple of
+    # sigma of the group's own mean centroid (the true center isn't directly
+    # observable from the public API, so we check mutual concentration).
+    compositor, _ = compositor_factory(
+        n_sources=6,
+        min_instances=6,
+        max_instances=6,
+        cluster_prob=1.0,
+        cluster_radius_fraction=0.15,
+        cluster_stray_fraction=0.0,
+    )
+    dest = _solid_image(200, 0)
+
+    random.seed(21)
+    _, anns = compositor(dest, [])
+    centroids = []
+    for ann in anns:
+        mask = mask_util.decode(ann["segmentation"]).astype(bool)
+        ys, xs = np.where(mask)
+        centroids.append((ys.mean(), xs.mean()))
+
+    sigma = compositor._cluster_sigma(200, 200)
+    mean_y = sum(c[0] for c in centroids) / len(centroids)
+    mean_x = sum(c[1] for c in centroids) / len(centroids)
+    for y, x in centroids:
+        assert abs(y - mean_y) < 4 * sigma
+        assert abs(x - mean_x) < 4 * sigma
+
+
+def test_cluster_center_moves_across_calls(compositor_factory):
+    # The Gaussian center must be freshly randomized per __call__, never
+    # fixed. Two different seeds should (with overwhelming probability, given
+    # a small std relative to a large canvas) produce different pile
+    # locations.
+    compositor, _ = compositor_factory(
+        n_sources=4,
+        min_instances=4,
+        max_instances=4,
+        cluster_prob=1.0,
+        cluster_radius_fraction=0.1,
+        cluster_stray_fraction=0.0,
+    )
+    dest = _solid_image(256, 0)
+
+    def _mean_centroid(seed):
+        random.seed(seed)
+        _, anns = compositor(dest, [])
+        pts = []
+        for ann in anns:
+            mask = mask_util.decode(ann["segmentation"]).astype(bool)
+            ys, xs = np.where(mask)
+            pts.append((ys.mean(), xs.mean()))
+        return sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+
+    c1 = _mean_centroid(30)
+    c2 = _mean_centroid(31)
+    assert c1 != c2
+
+
+def test_cluster_stray_fraction_one_behaves_like_uniform(compositor_factory):
+    # cluster_prob=1.0 but cluster_stray_fraction=1.0 -> every instance takes
+    # the stray (old uniform) branch despite the frame being "clustered",
+    # i.e. functionally equivalent to the plain uniform path.
+    compositor, _ = compositor_factory(
+        n_sources=5,
+        min_instances=3,
+        max_instances=3,
+        cluster_prob=1.0,
+        cluster_stray_fraction=1.0,
+    )
+    dest = _solid_image(64, 0)
+
+    random.seed(22)
+    _, anns = compositor(dest, [])
+    assert len(anns) == 3  # just a sanity check that placement still succeeds
+
+
+def test_place_clustered_clamps_instead_of_rejecting(compositor_factory):
+    # A center near the edge with std=0 must clamp the patch fully on-canvas
+    # rather than returning None - preserving the "no retry, clamp instead"
+    # guarantee for the clustered path.
+    compositor, _ = compositor_factory()
+    patch_mask = _l_shape(size=24)
+    placement = compositor._place(patch_mask, 64, 64, center=(0.0, 0.0), std=(0.0, 0.0))
+    assert placement is not None
+    py, px, full_mask = placement
+    assert 0 <= py <= 64 - 24
+    assert 0 <= px <= 64 - 24
+
+
 def test_transform_never_flips(compositor_factory):
     compositor, _ = compositor_factory()
     original = _l_shape()
@@ -217,7 +332,9 @@ def test_transform_uses_consistent_interpolation(compositor_factory):
 
     random.seed(6)
     for _ in range(40):
-        patch, patch_mask, _valid = compositor._transform_instance(original_image, original_mask)
+        patch, patch_mask, _valid = compositor._transform_instance(
+            original_image, original_mask
+        )
         assert set(np.unique(patch).tolist()) <= allowed_values
         assert set(np.unique(patch[patch_mask]).tolist()) <= {200}
 
@@ -267,7 +384,9 @@ def test_blend_never_bleeds_border_fill(compositor_factory):
 
     random.seed(11)
     for _ in range(20):
-        patch, patch_mask, valid_footprint = compositor._transform_instance(crop, thin_mask)
+        patch, patch_mask, valid_footprint = compositor._transform_instance(
+            crop, thin_mask
+        )
         ph, pw = patch_mask.shape[:2]
         composite = _solid_image(ph + pw + 100, dest_value)
         py, px = 50, 50
@@ -428,3 +547,361 @@ def test_poisson_blend_mode_falls_back_gracefully_in_full_call(compositor_factor
 
     assert len(new_anns) == 1
     assert mask_util.decode(new_anns[0]["segmentation"]).sum() > 0
+
+
+def test_returned_annotations_match_evaluator_gt_contract(compositor_factory):
+    """Pins what tools/eval_composited_confusion.py hands to
+    HungarianInstanceEvaluator._load_gt_masks: every annotation must decode to a
+    full-frame (H, W) mask and carry a category_id from the source class space,
+    with no conversion step in between."""
+    random.seed(7)
+    compositor, _ = compositor_factory(min_instances=3, max_instances=3)
+    dest = _solid_image(64, 0)
+    dest_ann = _make_ann(_solid_rect_mask(size=64, margin=20), category_id=5)
+
+    _, anns = compositor(dest, [dest_ann])
+
+    assert len(anns) >= 2
+    for ann in anns:
+        assert ann["category_id"] in {5, 6, 7}
+        assert ann["iscrowd"] == 0
+        assert ann["bbox_mode"] == 1
+        assert 0.0 <= ann["visibility_fraction"] <= 1.0
+        mask = mask_util.decode(ann["segmentation"])
+        assert mask.shape == (64, 64)
+        assert mask.dtype == np.uint8
+
+
+# --- per-instance appearance jitter (INPUT.COPY_PASTE.INSTANCE_JITTER) --------
+#
+# The contract is narrow and worth pinning: jitter changes PIXELS ONLY. If it ever
+# moved geometry, every returned annotation would disagree with what was painted,
+# and the modal-mask bookkeeping in _update_modal_annotation would be silently wrong.
+
+_LIVE_JITTER = {
+    "brightness": (0.7, 1.3),
+    "contrast": (0.8, 1.2),
+    "saturation": (0.8, 1.2),
+    "hue_degrees": 10.0,
+    "blur_sigma": (0.0, 1.5),
+}
+
+
+def test_normalize_jitter_treats_identity_config_as_off():
+    assert cp_mod._normalize_jitter(None) is None
+    assert cp_mod._normalize_jitter({}) is None
+    assert (
+        cp_mod._normalize_jitter(
+            {
+                "brightness": (1.0, 1.0),
+                "contrast": (1.0, 1.0),
+                "saturation": (1.0, 1.0),
+                "hue_degrees": 0.0,
+                "blur_sigma": (0.0, 0.0),
+            }
+        )
+        is None
+    )
+
+
+def test_normalize_jitter_reads_uppercase_config_keys():
+    # yacs CfgNode is a dict subclass with UPPERCASE keys. Reading only lowercase
+    # would make every arm config silently train with jitter OFF.
+    from yacs.config import CfgNode as CN
+
+    cfg = CN()
+    cfg.BRIGHTNESS = [0.8, 1.2]
+    cfg.CONTRAST = [1.0, 1.0]
+    cfg.SATURATION = [1.0, 1.0]
+    cfg.HUE_DEGREES = 0.0
+    cfg.BLUR_SIGMA = [0.0, 0.0]
+    assert cp_mod._normalize_jitter(cfg)["brightness"] == (0.8, 1.2)
+
+
+def test_default_config_leaves_instance_jitter_off():
+    from detectron2.config import get_cfg
+
+    cfg = get_cfg()
+    add_maskdino_config(cfg)
+    assert cp_mod._normalize_jitter(cfg.INPUT.COPY_PASTE.INSTANCE_JITTER) is None
+
+
+def test_jitter_off_is_bit_identical(compositor_factory):
+    random.seed(7)
+    plain, _ = compositor_factory()
+    out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(7)
+    explicit_noop, _ = compositor_factory(
+        instance_jitter={"brightness": (1.0, 1.0), "blur_sigma": (0.0, 0.0)}
+    )
+    out_noop, anns_noop = explicit_noop(_solid_image(64, 0), [])
+
+    assert np.array_equal(out_plain, out_noop)
+    assert [a["segmentation"] for a in anns_plain] == [
+        a["segmentation"] for a in anns_noop
+    ]
+
+
+def test_jitter_changes_pixels_but_not_geometry(compositor_factory):
+    random.seed(11)
+    plain, _ = compositor_factory()
+    out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(11)
+    jittered, _ = compositor_factory(instance_jitter=_LIVE_JITTER)
+    out_jit, anns_jit = jittered(_solid_image(64, 0), [])
+
+    # Same draws for placement/rotation (the jitter draws come last, after every
+    # geometric decision), so the masks must match exactly...
+    assert len(anns_plain) == len(anns_jit) == 1
+    for a, b in zip(anns_plain, anns_jit):
+        assert a["segmentation"] == b["segmentation"]
+        assert a["bbox"] == b["bbox"]
+        assert a["area"] == b["area"]
+        assert a["visibility_fraction"] == b["visibility_fraction"]
+    # ...while the painted pixels must not.
+    assert not np.array_equal(out_plain, out_jit)
+
+
+def test_jitter_only_repaints_inside_the_pasted_footprint(compositor_factory):
+    random.seed(3)
+    plain, _ = compositor_factory()
+    out_plain, anns = plain(_solid_image(64, 0), [])
+
+    random.seed(3)
+    jittered, _ = compositor_factory(instance_jitter=_LIVE_JITTER)
+    out_jit, _ = jittered(_solid_image(64, 0), [])
+
+    pasted = mask_util.decode(anns[0]["segmentation"]).astype(bool)
+    changed = np.any(out_plain != out_jit, axis=2)
+    # Blending softens a few pixels just outside the mask, so allow the difference
+    # to touch the dilated footprint - but never the far background.
+    allowed = cv2.dilate(pasted.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+    assert not np.any(changed & ~allowed)
+
+
+def test_jitter_produces_a_different_appearance_each_paste(compositor_factory):
+    # The whole point: one cached source crop must not look identical every time.
+    # Same global seed on both calls -> identical placement, so any pixel difference
+    # is the private jitter stream advancing, which is exactly what should vary.
+    jittered, _ = compositor_factory(instance_jitter=_LIVE_JITTER)
+    random.seed(21)
+    first, anns_first = jittered(_solid_image(64, 0), [])
+    random.seed(21)
+    second, anns_second = jittered(_solid_image(64, 0), [])
+    assert anns_first[0]["segmentation"] == anns_second[0]["segmentation"]
+    assert not np.array_equal(first, second)
+
+
+# --- per-instance projective warp (INPUT.COPY_PASTE.PERSPECTIVE) -------------
+#
+# Unlike INSTANCE_JITTER this one DOES change geometry, so the contract is the
+# opposite: the mask must move exactly with the pixels, and the returned annotation
+# must describe where the instrument actually landed.
+
+_LIVE_PERSPECTIVE = {"prob": 1.0, "tilt_degrees": 20.0}
+
+
+def test_normalize_perspective_off_unless_both_knobs_set():
+    assert cp_mod._normalize_perspective(None) is None
+    assert cp_mod._normalize_perspective({"prob": 0.0, "tilt_degrees": 15.0}) is None
+    assert cp_mod._normalize_perspective({"prob": 1.0, "tilt_degrees": 0.0}) is None
+    assert cp_mod._normalize_perspective({"prob": 0.5, "tilt_degrees": 15.0}) == (
+        0.5,
+        15.0,
+    )
+
+
+def test_default_config_leaves_instance_perspective_off():
+    from detectron2.config import get_cfg
+
+    cfg = get_cfg()
+    add_maskdino_config(cfg)
+    assert cp_mod._normalize_perspective(cfg.INPUT.COPY_PASTE.PERSPECTIVE) is None
+
+
+def test_perspective_off_is_bit_identical(compositor_factory):
+    random.seed(17)
+    plain, _ = compositor_factory()
+    out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(17)
+    explicit_off, _ = compositor_factory(
+        instance_perspective={"prob": 0.0, "tilt_degrees": 15.0}
+    )
+    out_off, anns_off = explicit_off(_solid_image(64, 0), [])
+
+    assert np.array_equal(out_plain, out_off)
+    assert [a["segmentation"] for a in anns_plain] == [
+        a["segmentation"] for a in anns_off
+    ]
+
+
+def test_perspective_changes_the_pasted_shape(compositor_factory):
+    random.seed(23)
+    plain, _ = compositor_factory()
+    _out_plain, anns_plain = plain(_solid_image(64, 0), [])
+
+    random.seed(23)
+    warped, _ = compositor_factory(instance_perspective=_LIVE_PERSPECTIVE)
+    _out_warp, anns_warp = warped(_solid_image(64, 0), [])
+
+    assert anns_plain[0]["segmentation"] != anns_warp[0]["segmentation"]
+
+
+def test_perspective_keeps_mask_on_the_pasted_pixels(compositor_factory):
+    # The decisive property. The sources are bright L-shapes on a black destination,
+    # so every pixel the compositor actually painted must be inside the returned
+    # mask - if the warp moved image and mask apart, painted pixels would fall
+    # outside it.
+    random.seed(29)
+    warped, _ = compositor_factory(
+        instance_perspective=_LIVE_PERSPECTIVE, blend_modes=("none",)
+    )
+    out, anns = warped(_solid_image(64, 0), [])
+
+    mask = mask_util.decode(anns[0]["segmentation"]).astype(bool)
+    painted = out.max(axis=2) > 0
+    assert painted.sum() > 0
+    stray = np.logical_and(painted, ~mask).sum()
+    assert stray == 0, f"{stray} painted pixels fell outside the instance mask"
+
+
+def test_perspective_is_area_neutral_on_average(compositor_factory):
+    # This per-instance version expands its canvas and
+    # rescales the tilted quad back to the source area, so it must not systematically
+    # grow or shrink instruments - apparent size is a class cue here.
+    areas_plain, areas_warped = [], []
+    for seed in range(40):
+        random.seed(seed)
+        plain, _ = compositor_factory()
+        _o, a = plain(_solid_image(64, 0), [])
+        areas_plain.append(a[0]["area"])
+
+        random.seed(seed)
+        warped, _ = compositor_factory(instance_perspective=_LIVE_PERSPECTIVE)
+        _o, a = warped(_solid_image(64, 0), [])
+        areas_warped.append(a[0]["area"])
+
+    ratio = np.mean(areas_warped) / np.mean(areas_plain)
+    assert 0.93 < ratio < 1.07, f"systematic area change {ratio:.3f}"
+
+
+def test_perspective_does_not_shift_placement_draws(compositor_factory):
+    # Perspective draws come from a private RNG, so enabling it must not consume
+    # global draws and move every subsequent paste - otherwise an arm testing
+    # perspective would also differ in pile layout.
+    random.seed(31)
+    plain, _ = compositor_factory(min_instances=3, max_instances=3)
+    _o, anns_plain = plain(_solid_image(96, 0), [])
+
+    random.seed(31)
+    warped, _ = compositor_factory(
+        min_instances=3, max_instances=3, instance_perspective=_LIVE_PERSPECTIVE
+    )
+    _o, anns_warp = warped(_solid_image(96, 0), [])
+
+    assert len(anns_plain) == len(anns_warp)
+    # Same instruments, in the same order, at roughly the same spots.
+    assert [a["category_id"] for a in anns_plain] == [
+        a["category_id"] for a in anns_warp
+    ]
+
+
+def test_tilt_is_sampled_uniformly_in_angle():
+    # The point of parameterizing by angle: coverage must be flat across the range,
+    # not concentrated in the middle the way independent per-corner offsets are.
+    import random as _random
+
+    rng = _random.Random(0)
+    tilts = [rng.uniform(0.0, 18.0) for _ in range(6000)]
+    counts, _ = np.histogram(tilts, bins=6, range=(0.0, 18.0))
+    assert counts.min() / counts.max() > 0.85
+
+
+def test_tilt_homography_is_area_preserving():
+    # A real tilt foreshortens; the helper rescales it back, because apparent size
+    # is class-informative in this dataset.
+    corners = np.float32([[0, 0], [99, 0], [99, 99], [0, 99]])
+
+    def area(q):
+        x, y = q[:, 0], q[:, 1]
+        return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+    for tilt in (5.0, 15.0, 25.0):
+        h = cp_mod._tilt_homography(100, 100, tilt, 0.7)
+        pts = np.concatenate([corners, np.ones((4, 1), np.float32)], axis=1) @ h.T
+        assert area(pts[:, :2] / pts[:, 2:3]) == pytest.approx(area(corners), rel=0.02)
+
+
+def test_zero_tilt_is_the_identity():
+    h = cp_mod._tilt_homography(100, 80, 0.0, 1.3)
+    assert np.allclose(h / h[2, 2], np.eye(3), atol=1e-6)
+
+
+def test_contrast_pivots_on_instrument_not_patch_background():
+    """Contrast must pivot on the instrument's own pixels, not the whole patch.
+
+    The patch rect also holds the crop's mat background, which sits well below the
+    instrument. Pivoting there puts every instrument pixel above the pivot, so
+    raising contrast brightens the instrument and fights the brightness knob
+    (measured on real crops: at brightness 0.70, contrast 1.0 -> 2.6 moved the tool
+    mean 114.8 -> 183.8). It also makes a given contrast value mean different things
+    for different instrument shapes, since the pivot drifts with how much background
+    the bounding box contains.
+    """
+
+    patch = np.zeros((40, 40, 3), np.uint8)
+    patch[:] = 40  # dark "mat" background
+    mask = np.zeros((40, 40), bool)
+    mask[10:30, 10:30] = True
+    patch[mask] = 160  # bright "instrument"
+
+    comp = CopyPasteCompositor.__new__(CopyPasteCompositor)
+    comp.image_format = "BGR"
+    comp._rng_base = 7
+    comp._rng_worker = None
+    comp.instance_jitter = {
+        "brightness": (1.0, 1.0),
+        "contrast": (2.0, 2.0),
+        "saturation": (1.0, 1.0),
+        "hue_degrees": 0.0,
+        "blur_sigma": (0.0, 0.0),
+    }
+
+    before = patch[mask].mean()
+    after = comp._jitter_appearance(patch, mask)[mask].mean()
+    # Pivoting on the instrument mean leaves that mean where it was; only the
+    # spread around it changes.
+    assert abs(after - before) < 3.0
+
+    # ...and without a mask it must fall back to the old whole-patch pivot rather
+    # than crashing, which is what a caller with an empty mask would hit.
+    comp._rng_worker = None
+    fallback = comp._jitter_appearance(patch, None)[mask].mean()
+    assert fallback > before + 10
+
+
+def test_contrast_still_changes_internal_spread():
+    # Decoupling must not mean "contrast does nothing": it should still scale the
+    # instrument's internal texture, which is the statistic being matched to real.
+    patch = np.full((40, 40, 3), 40, np.uint8)
+    mask = np.zeros((40, 40), bool)
+    mask[10:30, 10:30] = True
+    rng = np.random.default_rng(0)
+    patch[mask] = rng.integers(120, 200, size=(mask.sum(), 3), dtype=np.uint8)
+
+    comp = CopyPasteCompositor.__new__(CopyPasteCompositor)
+    comp.image_format = "BGR"
+    comp._rng_base = 7
+    comp._rng_worker = None
+    comp.instance_jitter = {
+        "brightness": (1.0, 1.0),
+        "contrast": (1.8, 1.8),
+        "saturation": (1.0, 1.0),
+        "hue_degrees": 0.0,
+        "blur_sigma": (0.0, 0.0),
+    }
+    out = comp._jitter_appearance(patch, mask)
+    assert out[mask].std() > patch[mask].std() * 1.4

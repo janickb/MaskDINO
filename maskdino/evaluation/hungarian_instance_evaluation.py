@@ -26,6 +26,12 @@
 #     and normalized rates with an explicit denominator - false_negatives_per_gt,
 #     false_positives_per_pred, misclassified_per_match.
 #
+# IGNORE REGIONS: GT annotations with iscrowd=1 (frame-edge-truncated tools, see
+# apply_truncated_instance_filter) are not matched and never count as false negatives.
+# A prediction left unmatched after the Hungarian step that lies on one - intersection
+# over the PREDICTION's area >= IOU_THRESH, pycocotools' crowd rule - is ignored: not a
+# false positive, not counted in num_pred (reported as num_ignored).
+#
 # Config: cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.{ENABLED,SCORE_THRESH,IOU_THRESH,
 #         BOX_PREFILTER}  (see maskdino/config.py)
 #
@@ -53,7 +59,12 @@ from detectron2.utils import comm
 from detectron2.utils.events import get_event_storage
 from scipy.optimize import linear_sum_assignment
 
-__all__ = ["HungarianInstanceEvaluator", "hungarian_match", "mask_iou_matrix"]
+__all__ = [
+    "HungarianInstanceEvaluator",
+    "crowd_overlap",
+    "hungarian_match",
+    "mask_iou_matrix",
+]
 
 
 def mask_iou_matrix(pred_masks, gt_masks, box_prefilter=True, eps=1e-6):
@@ -103,6 +114,23 @@ def mask_iou_matrix(pred_masks, gt_masks, box_prefilter=True, eps=1e-6):
 
     iou[rows.unsqueeze(1), cols.unsqueeze(0)] = sub
     return iou
+
+
+def crowd_overlap(pred_masks, crowd_masks, eps=1e-6):
+    """Per prediction, its largest overlap with any ignore (iscrowd) region, measured
+    the way pycocotools scores a crowd GT: intersection / PREDICTION area -> (N,)
+    float32 on CPU. A prediction wholly inside a cut tool's visible pixels scores 1.0
+    however small the region is relative to it.
+    """
+    n, k = pred_masks.shape[0], crowd_masks.shape[0]
+    if n == 0 or k == 0:
+        return torch.zeros((n,), dtype=torch.float32)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    a = pred_masks.bool().cpu().reshape(n, -1).to(device=device, dtype=torch.float32)
+    b = crowd_masks.bool().cpu().reshape(k, -1).to(device=device, dtype=torch.float32)
+    inter = a @ b.t()  # (N, K)
+    ioa = inter / a.sum(dim=1, keepdim=True).clamp_min(eps)
+    return ioa.max(dim=1).values.cpu().to(torch.float32)
 
 
 def hungarian_match(iou, iou_thresh):
@@ -204,12 +232,12 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         return str(name).replace("/", "_")
 
     def _load_gt_masks(self, anns, gt_h, gt_w, image_id):
-        """Decode GT annotations -> (BoolTensor[M, gt_h, gt_w], np.int64[M] category ids)."""
-        masks, classes = [], []
+        """Decode GT annotations -> (BoolTensor[M, gt_h, gt_w], np.int64[M] category ids,
+        BoolTensor[K, gt_h, gt_w] ignore regions from the iscrowd annotations)."""
+        masks, classes, crowd = [], [], []
         for ann in anns:
-            if ann.get("iscrowd", 0) == 1:
-                continue
-            if ann.get("visibility_fraction", 1.0) < self._min_visibility:
+            is_crowd = ann.get("iscrowd", 0) == 1
+            if not is_crowd and ann.get("visibility_fraction", 1.0) < self._min_visibility:
                 continue
             seg = ann["segmentation"]
             counts = seg["counts"]
@@ -221,14 +249,17 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                     f"GT mask for image_id={image_id} is {tuple(m.shape[:2])}, "
                     f"expected {(gt_h, gt_w)}"
                 )
-            masks.append(torch.from_numpy(np.ascontiguousarray(m)).bool())
+            m = torch.from_numpy(np.ascontiguousarray(m)).bool()
+            if is_crowd:
+                crowd.append(m)
+                continue
+            masks.append(m)
             classes.append(int(ann["category_id"]))
 
-        if masks:
-            gt_masks = torch.stack(masks, dim=0)
-        else:
-            gt_masks = torch.zeros((0, gt_h, gt_w), dtype=torch.bool)
-        return gt_masks, np.asarray(classes, dtype=np.int64)
+        empty = torch.zeros((0, gt_h, gt_w), dtype=torch.bool)
+        gt_masks = torch.stack(masks, dim=0) if masks else empty
+        crowd_masks = torch.stack(crowd, dim=0) if crowd else empty
+        return gt_masks, np.asarray(classes, dtype=np.int64), crowd_masks
 
     # ------------------------------------------------------------------ process
 
@@ -244,7 +275,9 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                     image_id,
                 )
 
-            gt_masks, gt_classes = self._load_gt_masks(anns, gt_h, gt_w, image_id)
+            gt_masks, gt_classes, crowd_masks = self._load_gt_masks(
+                anns, gt_h, gt_w, image_id
+            )
 
             instances = out["instances"].to(self._cpu_device)
             keep = instances.scores >= self._score_thresh
@@ -270,11 +303,25 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             acc_gt = col_ind[accepted]
             acc_iou = matched_iou[accepted]
 
+            # Ignore regions are matched only AFTER the real GT, so a prediction is never
+            # spent on a cut tool when it could have been a hit: of the predictions left
+            # unmatched, those lying on an iscrowd region are dropped from the count.
+            matched_pred_set = set(acc_pred.tolist())
+            unmatched = [i for i in range(n) if i not in matched_pred_set]
+            ignored = set()
+            if unmatched and crowd_masks.shape[0]:
+                overlap = crowd_overlap(pred_masks[unmatched], crowd_masks)
+                ignored = {
+                    i for i, o in zip(unmatched, overlap.tolist()) if o >= self._iou_thresh
+                }
+            num_ignored = len(ignored)
+            num_pred = n - num_ignored
+
             # num_mask_matched: prediction whose mask IoU with a GT was accepted, any
             # label. num_correct_class: of those, the ones whose label is also right.
             num_mask_matched = int(accepted.sum())
             num_false_neg = m - num_mask_matched
-            num_false_pos = n - num_mask_matched
+            num_false_pos = num_pred - num_mask_matched
 
             if self._check_classes and num_mask_matched:
                 mis = pred_classes[acc_pred] != gt_classes[acc_gt]
@@ -287,22 +334,20 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             false_neg_gt_classes = [
                 int(gt_classes[j]) for j in range(m) if j not in matched_gt_set
             ]
-            matched_pred_set = set(acc_pred.tolist())
-            fp_pred_classes = [
-                int(pred_classes[i]) for i in range(n) if i not in matched_pred_set
-            ]
+            fp_pred_classes = [int(pred_classes[i]) for i in unmatched if i not in ignored]
 
             self._records.append(
                 {
                     "image_id": image_id,
                     "file_name": inp.get("file_name", ""),
                     "num_gt": m,
-                    "num_pred": n,
+                    "num_pred": num_pred,
                     "num_mask_matched": num_mask_matched,
                     "num_correct_class": num_correct_class,
                     "num_false_neg": num_false_neg,
                     "num_false_pos": num_false_pos,
                     "num_misclassified": num_misclassified,
+                    "num_ignored": num_ignored,
                     "sum_iou_matched": float(acc_iou.sum()),
                     "matched_iou": [float(x) for x in acc_iou.tolist()],
                     "gt_count_per_class": dict(
@@ -344,6 +389,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         false_neg = sum(r["num_false_neg"] for r in records)
         false_pos = sum(r["num_false_pos"] for r in records)
         misclassified = sum(r["num_misclassified"] for r in records)
+        num_ignored = sum(r.get("num_ignored", 0) for r in records)
         sum_iou = sum(r["sum_iou_matched"] for r in records)
 
         # classagnostic (localization only)
@@ -431,6 +477,8 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             "num_pred_total": float(num_pred),
             "num_mask_matched_total": float(num_mask_matched),
             "num_correct_class_total": float(num_correct_class),
+            # predictions on ignore (iscrowd) regions - in neither num_pred nor false_pos
+            "num_ignored_total": float(num_ignored),
         }
         # Per-class breakdowns are flattened into `res` with "<group>/<class>" keys rather
         # than kept as nested dicts: detectron2's print_csv_format walks res one level
@@ -450,8 +498,8 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
 
         self._logger.info(
             "[HungarianInstanceEvaluator] images=%d gt=%d pred=%d matched=%d correct=%d "
-            "fn=%d misclassified=%d fp=%d | precision=%.4f recall=%.4f f1=%.4f | "
-            "mean_iou_matched=%.4f",
+            "fn=%d misclassified=%d fp=%d ignored=%d | precision=%.4f recall=%.4f "
+            "f1=%.4f | mean_iou_matched=%.4f",
             n_images,
             num_gt,
             num_pred,
@@ -460,6 +508,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             false_neg,
             misclassified,
             false_pos,
+            num_ignored,
             classagnostic_precision,
             classagnostic_recall,
             classagnostic_f1,
@@ -555,6 +604,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             "num_false_pos",
             "num_misclassified",
             "sum_iou_matched",
+            "num_ignored",
         ]
         with open(per_img_csv, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")

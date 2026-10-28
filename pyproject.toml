@@ -16,14 +16,48 @@ dependencies = [
     "submitit>=1.5.4",
     "tensorboard>=2.21.0",
     "timm>=1.0.28",
+    "torch==2.13.0",
+    "torchvision",
 ]
 
 [tool.uv.sources]
 scene-generator = { path = "../scene_generator", editable = true }
 detectron2 = { git = "https://github.com/facebookresearch/detectron2.git" }
+# cu126 builds run on every server: sl21 (driver 570, CUDA <=12.8) and sl19
+# (driver 595). The default PyPI torch is cu130 and needs driver >=580.
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [tool.uv.extra-build-dependencies]
 detectron2 = [{ requirement = "torch", match-runtime = true }]
+
+# match-runtime needs detectron2's metadata up front (its setup.py is dynamic).
+# Copied from detectron2 0.6's METADATA; no extras are used here.
+[[tool.uv.dependency-metadata]]
+name = "detectron2"
+version = "0.6"
+requires-dist = [
+    "Pillow>=7.1",
+    "matplotlib",
+    "pycocotools>=2.0.2",
+    "termcolor>=1.1",
+    "yacs>=0.1.8",
+    "tabulate",
+    "cloudpickle",
+    "tqdm>4.29.0",
+    "tensorboard",
+    "fvcore>=0.1.5,<0.1.6",
+    "iopath>=0.1.7,<0.1.10",
+    "omegaconf>=2.1,<2.4",
+    "hydra-core>=1.1",
+    "black",
+    "packaging",
+]
 
 [dependency-groups]
 dev = [

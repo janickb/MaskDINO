@@ -1,0 +1,20 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_abl_jitteronly.yaml
+# --- Winning jitter recipe PLUS per-instance perspective ---------------------
+# abl_jitteronly (the best arm so far, 0.9030) with the projective tilt enabled
+# on top. TILT_DEGREES is meant to be set on the command line.
+#
+# Why test perspective here rather than only on the control base: perspective @30
+# on control was +0.0056 (+1.2 sigma, null). But control is NOT the recipe we
+# would ship - jitter is. An axis can be redundant with a weak base and still
+# add on a strong one, or vice versa. Testing it only against control would
+# leave that unanswered.
+#
+# Perspective is area-preserving and geometry-only, while jitter is
+# appearance-only with the mask untouched, so the two axes are independent by
+# construction - any interaction is in the model, not the augmentation.
+INPUT:
+  COPY_PASTE:
+    PERSPECTIVE:
+      PROB: 1.0
+      TILT_DEGREES: 30.0   # overridden per run
+OUTPUT_DIR: "runs/abl_jitter_persp"

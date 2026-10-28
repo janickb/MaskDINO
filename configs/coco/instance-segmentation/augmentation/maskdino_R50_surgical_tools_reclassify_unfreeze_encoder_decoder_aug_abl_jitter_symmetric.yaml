@@ -1,0 +1,24 @@
+_BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_control.yaml
+# --- ABLATION 3: per-instance jitter, SYMMETRIC about 1.0 --------------------
+# Identical to ablation 1 in every way except the ranges are re-centred on 1.0
+# while keeping the SAME WIDTH. This separates two confounded explanations:
+#
+#   (a) per-instance variation helps because the compositor re-pastes ~2 cached
+#       crops per class and any per-paste variation breaks that memorization;
+#   (b) the specific OFF-CENTRE values help, because synthetic instruments are
+#       measurably 18% too bright (154.3 vs 130.6 real) and only an asymmetric
+#       range corrects a systematic offset - a symmetric one has mean 1.0 and
+#       corrects nothing.
+#
+# Widths preserved exactly: brightness +/-0.08 (0.72-0.88 -> 0.92-1.08),
+# contrast +/-0.20 (1.50-1.90 -> 0.80-1.20), saturation +/-0.20 (0.9-1.3 ->
+# 0.8-1.2). Hue and blur are already centred/one-sided, so unchanged.
+INPUT:
+  COPY_PASTE:
+    INSTANCE_JITTER:
+      BRIGHTNESS:  [0.92, 1.08]
+      CONTRAST:    [0.80, 1.20]
+      SATURATION:  [0.8, 1.2]
+      HUE_DEGREES: 4.0
+      BLUR_SIGMA:  [0.0, 0.5]
+OUTPUT_DIR: "runs/abl_jitter_symmetric"

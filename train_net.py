@@ -311,14 +311,6 @@ class Trainer(DefaultTrainer):
             raise NotImplementedError(
                 f"no Evaluator for the dataset {dataset_name} with the type {evaluator_type}"
             )
-        if cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES:
-            # Prediction-side counterpart of apply_truncated_instance_filter's GT-side
-            # drop (register_hdf5_instance.py) - see truncated_prediction_filter.py.
-            from maskdino.evaluation.truncated_prediction_filter import (
-                DropTruncatedPredictions,
-            )
-
-            return DropTruncatedPredictions(evaluator_list)
         if len(evaluator_list) == 1:
             return evaluator_list[0]
         return DatasetEvaluators(evaluator_list)
@@ -506,16 +498,6 @@ class Trainer(DefaultTrainer):
         defaults["lr"] = cfg.SOLVER.BASE_LR
         defaults["weight_decay"] = cfg.SOLVER.WEIGHT_DECAY
 
-        # reclassify-finetune with the encoder unfrozen: the linear class head
-        # keeps BASE_LR, the (pretrained) encoder trains gentler.
-        rf = cfg.MODEL.MaskDINO.RECLASSIFY_FINETUNE
-        encoder_lr_mult = (
-            rf.ENCODER_LR_MULTIPLIER
-            if rf.ENABLED and rf.UNFREEZE_ENCODER
-            else 1.0
-        )
-        encoder_lr_prefixes = ("sem_seg_head.pixel_decoder",)
-
         norm_module_types = (
             torch.nn.BatchNorm1d,
             torch.nn.BatchNorm2d,
@@ -546,8 +528,6 @@ class Trainer(DefaultTrainer):
                     hyperparams["lr"] = (
                         hyperparams["lr"] * cfg.SOLVER.BACKBONE_MULTIPLIER
                     )
-                if encoder_lr_mult != 1.0 and module_name.startswith(encoder_lr_prefixes):
-                    hyperparams["lr"] = hyperparams["lr"] * encoder_lr_mult
                 if (
                     "relative_position_bias_table" in module_param_name
                     or "absolute_pos_embed" in module_param_name

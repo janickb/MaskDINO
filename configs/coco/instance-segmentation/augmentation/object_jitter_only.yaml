@@ -1,0 +1,40 @@
+_BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+# --- Phase-2 augmentation wave, arm: OBJECT_JITTER_ONLY ----------------------
+# Per-instance appearance jitter alone (pasted crops only), frame level at a
+# no-op - the single-axis counterpart to CONTROL.
+#
+# NOTE the ranges here are SYMMETRIC about 1.0, which is the abl_jitter_symmetric
+# condition from appearance_aug_sweep_phase2.md: +1.9 sigma, forcep03 flat at
+# 0.233. That report's winning arm was OFF-CENTRE (brightness [0.72, 0.88],
+# contrast [1.50, 1.90], centres 0.80/1.70 calibrated to real tool pixels) at
+# +5.3 sigma. Symmetric-vs-off-centre at equal width is a worthwhile comparison,
+# but this wave currently contains no off-centre arm, so on its own it will not
+# reproduce that effect.
+#
+# BLUR_SIGMA is left at its [0.0, 0.0] default, i.e. per-instance defocus OFF;
+# the winning recipe used [0.0, 0.5]. (The global photometric blur axis no longer
+# exists - see build_photometric_augmentations.)#
+# Shared protocol (held identical across every arm in this wave): base config
+# above (encoder+decoder+head trainable, backbone frozen), DATASETS.TRAIN
+# reclass_setab_mm -> DATASETS.TEST val_setab_mm, COPY_PASTE.ENABLED True with
+# CLUSTER_PROB 1.0 and PERSPECTIVE.PROB 0.0. Scale / batch / iters / LR come from
+# that base config (no arm file sets them, so arms can only differ in their dose);
+# seed is set by tools/augmentation/run_aug_sweep.sh. Previous wave used
+# MAX_ITER 10000, IMS_PER_BATCH 3 (3 GPUs x 1 img), BASE_LR 1e-5,
+# MIN_SCALE/MAX_SCALE 1.0/1.0, TEST_SAMPLE_STRIDE 4; match
+# that or this wave is not comparable to appearance_aug_sweep_phase2.md.
+
+INPUT:
+  COPY_PASTE:
+    INSTANCE_JITTER:
+      BRIGHTNESS:  [0.85, 1.15]
+      CONTRAST:    [0.85, 1.15]
+      SATURATION:  [0.85, 1.15]
+      HUE_DEGREES: 4.0
+  PHOTOMETRIC:
+    BRIGHTNESS: [1.0, 1.0]
+    CONTRAST:   [1.0, 1.0]
+    SATURATION: [1.0, 1.0]
+    NOISE_PROB: 0.0
+    NOISE_STD:  [0.0, 0.0]
+OUTPUT_DIR: "runs/augexp_object_jitter_only"

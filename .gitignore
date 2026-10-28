@@ -11,6 +11,11 @@ inference_test_output
 !/projects/DensePose/doc/images/*.jpg
 *log*
 
+# figures belonging to the write-ups in docs/ - the blanket *.png above would
+# otherwise silently drop them (this is how scratch/forcep0304_sides.png was lost)
+!docs/**/*.png
+!docs/**/*.jpg
+
 # compilation and distribution
 __pycache__
 _ext
@@ -53,3 +58,4 @@ _darcs
 /models
 /snippet
 runs/*
+debug_vis/*

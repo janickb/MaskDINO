@@ -20,6 +20,36 @@ from .coco_instance_new_baseline_dataset_mapper import build_transform_gen
 __all__ = ["Hdf5CocoInstanceDatasetMapper"]
 
 
+def _tighten_bbox_to_mask(anno):
+    """Re-derive the box from the transformed mask.
+
+    detectron2 transforms a box by mapping its four CORNERS and taking their AABB.
+    That is exact for the 90-degree rotations and the resize/crop this pipeline used
+    to be limited to, but a homography maps a rectangle to a quadrilateral, so the
+    corner AABB is only an upper bound - measured at DISTORTION_SCALE 0.05 it runs
+    ~4% loose on average and up to ~15% on a long diagonal instrument. Feeding that
+    to the box loss while the mask loss sees the true extent trains the two heads
+    toward different answers for the same object.
+
+    Mask and box are already consistent on the way in (CopyPasteCompositor derives
+    both from the same modal mask), so this just keeps them consistent on the way out.
+    A no-op for the transforms where the corner AABB is already exact.
+    """
+    seg = anno.get("segmentation")
+    if not isinstance(seg, np.ndarray):
+        return anno  # polygons: apply_polygons already tracks the true outline
+    ys, xs = np.nonzero(seg)
+    if len(ys) == 0:
+        # Warped entirely out of frame; a zero box makes filter_empty_instances
+        # drop it rather than leaving a box around nothing.
+        anno["bbox"] = [0.0, 0.0, 0.0, 0.0]
+    else:
+        anno["bbox"] = [
+            float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)
+        ]
+    return anno
+
+
 class Hdf5CocoInstanceDatasetMapper:
     """
     A callable which takes a dataset dict pointing at a BlenderProc-style .hdf5 frame
@@ -94,6 +124,16 @@ class Hdf5CocoInstanceDatasetMapper:
                 "feather_width_range": tuple(cfg.INPUT.COPY_PASTE.FEATHER_WIDTH_RANGE),
                 "core_margin_px": cfg.INPUT.COPY_PASTE.CORE_MARGIN_PX,
                 "image_format": cfg.INPUT.FORMAT,
+                "cluster_prob": cfg.INPUT.COPY_PASTE.CLUSTER_PROB,
+                "cluster_radius_fraction": cfg.INPUT.COPY_PASTE.CLUSTER_RADIUS_FRACTION,
+                "cluster_stray_fraction": cfg.INPUT.COPY_PASTE.CLUSTER_STRAY_FRACTION,
+                # Per-pasted-instance appearance jitter; a no-op node (the default)
+                # is normalized to None inside the compositor, so the hot path is
+                # untouched for every config that does not opt in.
+                "instance_jitter": cfg.INPUT.COPY_PASTE.INSTANCE_JITTER,
+                # Per-instance projective warp - geometry, so kept separate from
+                # INSTANCE_JITTER (which is contractually appearance-only).
+                "instance_perspective": cfg.INPUT.COPY_PASTE.PERSPECTIVE,
             },
         }
         return ret
@@ -148,7 +188,9 @@ class Hdf5CocoInstanceDatasetMapper:
             return dataset_dict
 
         annos = [
-            utils.transform_instance_annotations(obj, transforms, image_shape)
+            _tighten_bbox_to_mask(
+                utils.transform_instance_annotations(obj, transforms, image_shape)
+            )
             for obj in dataset_dict.pop("annotations")
             if obj.get("iscrowd", 0) == 0
             and obj.get("visibility_fraction", 1.0) >= self.min_visibility

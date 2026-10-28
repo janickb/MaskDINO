@@ -1,0 +1,21 @@
+_BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
+# --- Appearance-dose sweep, arm A0: CONTROL ----------------------------------
+# The dose that was hardcoded in build_transform_gen before INPUT.PHOTOMETRIC
+# existed, written out explicitly so this arm is auditable rather than implied.
+# Every value here equals maskdino/config.py's default, so this arm IS today's
+# pipeline - its job is to anchor the other three, which differ from it in
+# nothing but the numbers below.
+#
+# Everything outside INPUT.PHOTOMETRIC / INPUT.COPY_PASTE.INSTANCE_JITTER is held
+# identical across all four arms by scratch/run_aug_sweep.sh, which sets the
+# shared protocol (scale, batch, iters, seed) on the command line - so the arm
+# files cannot drift apart on anything but the dose.
+INPUT:
+  PHOTOMETRIC:
+    BRIGHTNESS: [0.7, 1.3]
+    CONTRAST: [0.7, 1.3]
+    SATURATION: [0.8, 1.2]
+    # Ran with LIGHTING: 0.9. That axis has since been deleted (see
+    # build_photometric_augmentations): it was inert at every scale, so its removal
+    # does not change what this arm reproduces.
+OUTPUT_DIR: "runs/aug_control"

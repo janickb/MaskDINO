@@ -31,4 +31,5 @@ SOLVER:
     THRESHOLD: 1e-2
 TEST:
   EVAL_PERIOD: 5000
-OUTPUT_DIR: "runs/single_class_v2"
+OUTPUT_DIR: "runs/single_class_v2_frozen_backbone"
+

@@ -5,7 +5,6 @@ import logging
 import os
 
 import h5py
-
 from detectron2.data import DatasetCatalog
 from sgdata import schema
 from sgdata.coco import build_coco_annotations
@@ -31,12 +30,25 @@ from .register_hdf5_pool_instance import (
 # variant with no rendered frames yet is skipped with a warning instead of
 # blocking/crashing `import maskdino`.
 _TRAIN_POOL_DIRS = {
-    "train_seta_mm": "/home/janick.bilang/training/images/train_phase1_pool_set_a_mm",
+    "train_seta_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase1_pool_set_a_mm",
 }
 _VAL_DIRS = {
-    "val_seta_mm": "/home/janick.bilang/training/images/val_set_a_mm",
-    "val_setab_mm": "/home/janick.bilang/training/images/val_set_ab_mm",
-    "val_set_home": "/home/janick.bilang/training/images/val_set_home",
+    "val_seta_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_a_mm",
+    "val_setab_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_mm",
+    "val_set_home": "/home/janick.bilang/training/images_dgx-a100/val_set_home",
+    "val_setab_fixedsurf_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm",
+    "val_setab_fixedsurf2_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf2_mm",
+    "val_setab_fixedsurf_larger_forcep_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_larger_forcep_mm",
+    # Focal-length sweep: the same simulations rendered with the camera at
+    # 0.67x / 1.0x / 1.5x focal length (identical filenames across levels).
+    "val_setab_fixedsurf_mm-0.67x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm-0.67x",
+    "val_setab_fixedsurf_mm-1.0x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm-1.0x",
+    "val_setab_fixedsurf_mm-1.5x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm-1.5x",
+    # v2: same finishes, piles held by a tighter containment box (half_extent 0.14 m)
+    # so every tool stays inside the 1.5x frame - one object set for all levels.
+    "val_setab_fixedsurf_mm_v2-0.67x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm_v2-0.67x",
+    "val_setab_fixedsurf_mm_v2-1.0x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm_v2-1.0x",
+    "val_setab_fixedsurf_mm_v2-1.5x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm_v2-1.5x",
 }
 
 # Single-class ("surgical-instruments") views of train_seta_mm/val_seta_mm - same
@@ -58,8 +70,16 @@ _VAL_DIRS_SINGLE_CLASS = {
 # omits `coco_annotations`, so they are built on the fly from
 # instance_segmaps + instance_attribute_maps (same output as sgdata.backfill).
 _RECLASS_TRAIN_DIRS = {
-    "reclass_setab_mm": "/home/janick.bilang/training/images/train_phase2_set_ab_mm",
-    "reclass_set_home": "/home/janick.bilang/training/images/train_phase2_set_home",
+    "reclass_setab_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_mm",
+    "reclass_setab_v2_mm": "/home/janick.bilang/train_images/train_phase2_set_ab_v3_mm",
+    "reclass_set_home": "/home/janick.bilang/train_images/train_phase2_set_home",
+    "reclass_setab_fixedsurf_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm",
+    "reclass_setab_fixedsurf2_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf2_mm",
+    "reclass_setab_fixedsurf_larger_forcep_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_larger_forcep_mm",
+    # Focal-length sweep, paired with the val_setab_fixedsurf_mm-<level> entries.
+    "reclass_setab_fixedsurf_mm-0.67x": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm-0.67x",
+    "reclass_setab_fixedsurf_mm-1.0x": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm-1.0x",
+    "reclass_setab_fixedsurf_mm-1.5x": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm-1.5x",
 }
 
 
@@ -78,10 +98,12 @@ def _cached(name, build_fn):
     HDF5 metadata scan once per process, instead of once per caller (test-loader build,
     COCOEvaluator's json conversion, HungarianInstanceEvaluator's own GT index) on every
     single periodic eval tick - DatasetCatalog.get() is not memoized by detectron2."""
+
     def get():
         if name not in _dataset_dicts_cache:
             _dataset_dicts_cache[name] = build_fn()
         return _dataset_dicts_cache[name]
+
     return get
 
 
@@ -116,21 +138,40 @@ def _is_truncated(ann, height, width):
 
 
 def apply_truncated_instance_filter(cfg):
-    """Re-register each cfg.DATASETS.TEST dataset with frame-border-truncated
-    GT instances dropped, when cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES is set."""
+    """Re-register each cfg.DATASETS.TEST dataset with frame-border-truncated GT
+    instances marked iscrowd=1, when cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES is set.
+
+    iscrowd turns a cut tool into an IGNORE region rather than deleting it: neither
+    a miss when undetected nor a false positive when detected. COCOEvaluator gets
+    that from pycocotools' crowd handling (detectron2's COCO conversion carries the
+    flag), HungarianInstanceEvaluator from its own crowd handling. Deleting the GT
+    instead left every detection of a cut tool with nothing to match, i.e. a false
+    positive - and the higher the zoom, the more tools the frame edge cuts. The
+    is_train mappers skip iscrowd annotations, so the validation loss still never
+    sees them."""
     if not cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES:
         return
     for name in cfg.DATASETS.TEST:
         full = DatasetCatalog.get(name)
-        filtered = []
+        marked = []
         for d in full:
             h, w = d["height"], d["width"]
-            kept = [a for a in d["annotations"] if not _is_truncated(a, h, w)]
-            filtered.append(
-                {**d, "annotations": kept} if len(kept) != len(d["annotations"]) else d
+            cut = [_is_truncated(a, h, w) for a in d["annotations"]]
+            if not any(cut):
+                marked.append(d)
+                continue
+            # copy, never mutate: the source dicts are _cached and shared
+            marked.append(
+                {
+                    **d,
+                    "annotations": [
+                        {**a, "iscrowd": 1} if c else a
+                        for a, c in zip(d["annotations"], cut)
+                    ],
+                }
             )
         DatasetCatalog.remove(name)
-        DatasetCatalog.register(name, lambda filtered=filtered: filtered)
+        DatasetCatalog.register(name, lambda marked=marked: marked)
 
 
 def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
@@ -170,7 +211,9 @@ def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
             }
         )
     if not dicts:
-        log.warning("[reclass] 0 usable frames from %s (filter/keep too strict?)", hdf5_dir)
+        log.warning(
+            "[reclass] 0 usable frames from %s (filter/keep too strict?)", hdf5_dir
+        )
     return dicts
 
 
