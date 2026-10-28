@@ -26,15 +26,18 @@ MODEL:
       UNFREEZE_ENCODER: True
     TEST:
       HUNGARIAN_EVAL:
-        PERIOD: 2000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
+        PERIOD: 500                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
 SOLVER:
-  IMS_PER_BATCH: 2
-  BASE_LR: 0.00001
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.00003
+  MAX_ITER: 2000
+  WARMUP_ITERS: 400
+  CHECKPOINT_PERIOD: 500
 DATASETS:
-  TRAIN: ("reclass_setab_mm",)
-  TEST: ("val_setab_mm",)
+  TRAIN: ("reclass_setab_fixedsurf_larger_forcep_mm",)
+  TEST: ("val_setab_fixedsurf_larger_forcep_mm",)
 TEST:
   # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
   # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
-  EVAL_PERIOD: 1000                   # watch for decoder drift / overfit early
+  EVAL_PERIOD: 500                   # watch for decoder drift / overfit early
 OUTPUT_DIR: "runs/reclassify_v1_sim_no_additional_clamp"

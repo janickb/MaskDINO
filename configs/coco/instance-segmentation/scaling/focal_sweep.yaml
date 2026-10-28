@@ -1,0 +1,40 @@
+_BASE_: ../augmentation/calibrated_jitter.yaml
+# --- Phase-2 focal-length sweep (docs/experiments/scaling_experiment.md) -------
+# The same simulations rendered with the camera at 0.67x / 1.0x / 1.5x focal
+# length: more (or fewer) pixels per mm on every tool, nothing else changed, and
+# identical filenames across levels so val instances pair up 1:1. 1.0x is the
+# control. tools/scaling/run_focal_sweep.sh picks the level on the command line
+# and always sets DATASETS.TRAIN and DATASETS.TEST together; the defaults below
+# are the 1.0x control.
+#
+# Recipe: calibrated per-instance jitter (the appearance_aug_sweep_phase2.md
+# winner, same as the earlier 1.0x/1.5x forcep-only scale runs). Everything an
+# arm could otherwise inherit from a base config that gets edited between
+# launches is pinned here, so levels launched hours apart can only differ in
+# their data.
+MODEL:
+  # Phase 1 trained with scale jitter 0.67-1.5 at IMAGE_SIZE 1024, so its frozen
+  # backbone has seen all three levels and favours none of them.
+  WEIGHTS: "runs/20261025111522_phase1_training_seta_v1-0_1.5-scale/model_final.pth"
+  MaskDINO:
+    TEST:
+      HUNGARIAN_EVAL:
+        PERIOD: 500
+DATASETS:
+  TRAIN: ("reclass_setab_fixedsurf_mm-1.0x",)
+  TEST: ("val_setab_fixedsurf_mm-1.0x",)
+  TEST_SAMPLE_STRIDE: 4   # in-training monitoring only; the script re-evaluates model_final at stride 1
+INPUT:
+  IMAGE_SIZE: 1024
+  MIN_SCALE: 1.0          # no scale jitter: it would blur the levels into each other
+  MAX_SCALE: 1.0
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.00003
+  LR_SCHEDULER_NAME: "WarmupCosineLR"
+  MAX_ITER: 2000
+  WARMUP_ITERS: 400
+  CHECKPOINT_PERIOD: 100000   # > MAX_ITER: keep model_final only (323 MB each, 60 GiB quota)
+TEST:
+  EVAL_PERIOD: 500
+OUTPUT_DIR: "runs/focal_1.0x"
