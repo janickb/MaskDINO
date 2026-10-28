@@ -43,7 +43,7 @@ def test_is_truncated_interior_bbox_is_not_truncated():
     assert _is_truncated(_ann((10.0, 10.0, 20.0, 20.0)), height=100, width=100) is False
 
 
-# --------------------------------------------------------------------------- touches_frame_edge (XYXY, shared by GT + predictions)
+# --------------------------------------------------------------------------- touches_frame_edge (XYXY)
 
 
 def test_touches_frame_edge_xyxy_interior_and_edge():
@@ -72,8 +72,8 @@ def registered_test_dataset():
             "height": 100,
             "width": 100,
             "annotations": [
-                _ann((10.0, 10.0, 20.0, 20.0)),  # interior - kept
-                _ann((0.0, 5.0, 10.0, 10.0)),  # touches left edge - dropped
+                _ann((10.0, 10.0, 20.0, 20.0)),  # interior - unchanged
+                _ann((0.0, 5.0, 10.0, 10.0)),  # touches left edge - iscrowd
             ],
         },
         {
@@ -82,8 +82,15 @@ def registered_test_dataset():
             "height": 100,
             "width": 100,
             "annotations": [
-                _ann((5.0, 90.0, 10.0, 10.0)),  # touches bottom edge - dropped
+                _ann((5.0, 90.0, 10.0, 10.0)),  # touches bottom edge - iscrowd
             ],
+        },
+        {
+            "file_name": "c.hdf5",
+            "image_id": 2,
+            "height": 100,
+            "width": 100,
+            "annotations": [_ann((40.0, 40.0, 10.0, 10.0))],  # nothing cut
         },
     ]
     DatasetCatalog.register(name, lambda: dicts)
@@ -91,7 +98,7 @@ def registered_test_dataset():
     DatasetCatalog.remove(name)
 
 
-def test_apply_truncated_instance_filter_drops_edge_touching_annotations(
+def test_apply_truncated_instance_filter_marks_edge_touching_annotations_iscrowd(
     registered_test_dataset,
 ):
     name, original = registered_test_dataset
@@ -99,12 +106,26 @@ def test_apply_truncated_instance_filter_drops_edge_touching_annotations(
     apply_truncated_instance_filter(cfg)
 
     result = DatasetCatalog.get(name)
-    assert [len(d["annotations"]) for d in result] == [1, 0]
-    assert result[0]["annotations"][0]["bbox"] == [10.0, 10.0, 20.0, 20.0]
+    # kept as ignore regions, not deleted
+    assert [len(d["annotations"]) for d in result] == [2, 1, 1]
+    assert [a["iscrowd"] for a in result[0]["annotations"]] == [0, 1]
+    assert result[1]["annotations"][0]["iscrowd"] == 1
+    assert result[0]["annotations"][1]["bbox"] == [0.0, 5.0, 10.0, 10.0]
     # image-level fields untouched
     assert result[0]["file_name"] == "a.hdf5"
     assert result[0]["height"] == 100 and result[0]["width"] == 100
     assert result[1]["file_name"] == "b.hdf5"
+
+
+def test_apply_truncated_instance_filter_never_mutates_the_source_dicts(
+    registered_test_dataset,
+):
+    # the real registrations hand out _cached dicts shared by every consumer
+    name, original = registered_test_dataset
+    apply_truncated_instance_filter(_fake_cfg(name, exclude_truncated=True))
+
+    assert [a["iscrowd"] for d in original for a in d["annotations"]] == [0, 0, 0, 0]
+    assert DatasetCatalog.get(name)[2] is original[2]  # untouched frame passed through
 
 
 def test_apply_truncated_instance_filter_is_noop_when_disabled(registered_test_dataset):

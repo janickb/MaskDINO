@@ -223,9 +223,10 @@ def add_maskdino_config(cfg):
 
     cfg.INPUT.MIN_VISIBILITY = 0.0
 
-    # Drop GT + predicted instances cut off by the frame edge from evaluation
-    # (DATASETS.TEST only) - unlike MIN_VISIBILITY, which is occlusion, not
-    # truncation. See apply_truncated_instance_filter / DropTruncatedPredictions.
+    # Score instances cut off by the frame edge as ignore regions (iscrowd=1):
+    # neither a miss nor a false positive (DATASETS.TEST only) - unlike
+    # MIN_VISIBILITY, which is occlusion, not truncation. See
+    # apply_truncated_instance_filter.
     cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES = True
 
     cfg.INPUT.RANDOM_ROTATION = True

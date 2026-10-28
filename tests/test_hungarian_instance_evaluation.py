@@ -17,6 +17,7 @@ from detectron2.structures import Instances
 
 from maskdino.evaluation.hungarian_instance_evaluation import (
     HungarianInstanceEvaluator,
+    crowd_overlap,
     hungarian_match,
     mask_iou_matrix,
 )
@@ -87,9 +88,12 @@ def make_evaluator(
     return ev
 
 
-def run_one(ev, image_id, gt_masks_classes, pred):
-    """gt_masks_classes: list[(mask_bool, cid)]; pred: (masks, scores, classes)."""
-    ev._gt_by_image_id[image_id] = [rle_ann(m, c) for m, c in gt_masks_classes]
+def run_one(ev, image_id, gt_masks_classes, pred, crowd=()):
+    """gt_masks_classes: list[(mask_bool, cid)]; pred: (masks, scores, classes);
+    crowd: masks of iscrowd=1 ignore regions (e.g. frame-edge-truncated tools)."""
+    ev._gt_by_image_id[image_id] = [rle_ann(m, c) for m, c in gt_masks_classes] + [
+        {**rle_ann(m, 1), "iscrowd": 1} for m in crowd
+    ]
     ev._hw_by_image_id[image_id] = (H, W)
     if not ev._records:
         ev.reset()
@@ -283,6 +287,115 @@ def test_process_resolution_mismatch_raises():
     )
     with pytest.raises(RuntimeError):
         ev.process([{"image_id": 1, "file_name": "x"}], [{"instances": big}])
+
+
+# --------------------------------------------------------------------------- iscrowd ignore regions
+
+
+def test_crowd_overlap_is_intersection_over_prediction_area():
+    pred = rect(0, 0, 10, 10)  # 100 px
+    crowd = torch.stack([rect(0, 0, 10, 6), rect(0, 0, 40, 40)])  # covers 60 / all of it
+    ov = crowd_overlap(pred[None], crowd[:1])
+    assert ov.tolist() == pytest.approx([0.6])
+    # a crowd region far larger than the prediction still scores 1.0 (not IoU)
+    assert crowd_overlap(pred[None], crowd).tolist() == pytest.approx([1.0])
+
+
+def test_crowd_overlap_empty_inputs():
+    a = rect(0, 0, 10, 10)
+    empty = torch.zeros((0, H, W), dtype=torch.bool)
+    assert crowd_overlap(empty, a[None]).shape == (0,)
+    assert crowd_overlap(a[None], empty).tolist() == [0.0]
+
+
+def test_process_detection_of_crowd_region_is_ignored():
+    ev = make_evaluator()
+    r = run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 3)],
+        ([rect(0, 0, 12, 12), rect(25, 0, 40, 10)], [0.9, 0.8], [3, 5]),
+        crowd=[rect(25, 0, 40, 10)],
+    )
+    assert r["num_gt"] == 1  # the crowd region is not GT
+    assert r["num_pred"] == 1  # nor is a prediction on it counted
+    assert r["num_ignored"] == 1
+    assert r["num_false_pos"] == 0
+    assert r["false_pos_per_class"] == {}
+    assert r["num_mask_matched"] + r["num_false_pos"] == r["num_pred"]
+
+
+def test_process_undetected_crowd_region_is_not_a_miss():
+    ev = make_evaluator()
+    r = run_one(ev, 1, [], ([], [], []), crowd=[rect(0, 0, 12, 12)])
+    assert r["num_gt"] == 0
+    assert r["num_false_neg"] == 0
+    assert r["false_neg_per_class"] == {}
+
+
+def test_process_partial_crowd_overlap_below_threshold_is_a_false_positive():
+    ev = make_evaluator(iou_thresh=0.5)
+    # pred 10x10, 40 px of it on the crowd region -> 0.4 < 0.5 -> still a hallucination
+    r = run_one(
+        ev,
+        1,
+        [],
+        ([rect(0, 0, 10, 10)], [0.9], [2]),
+        crowd=[rect(0, 0, 10, 4)],
+    )
+    assert r["num_ignored"] == 0
+    assert r["num_false_pos"] == 1
+    assert r["false_pos_per_class"] == {2: 1}
+
+
+def test_process_real_gt_takes_precedence_over_crowd_region():
+    ev = make_evaluator()
+    # the prediction sits on both a real GT and a crowd region: it is a hit, not ignored
+    r = run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 3)],
+        ([rect(0, 0, 12, 12)], [0.9], [3]),
+        crowd=[rect(0, 0, 12, 12)],
+    )
+    assert r["num_mask_matched"] == 1
+    assert r["num_correct_class"] == 1
+    assert r["num_ignored"] == 0
+    assert r["num_false_pos"] == 0
+
+
+def test_process_crowd_ignores_visibility_filter():
+    # MIN_VISIBILITY filters real GT only; a cut tool stays an ignore region whatever
+    # its visibility_fraction
+    ev = make_evaluator()
+    ev._min_visibility = 0.5
+    ev._gt_by_image_id[1] = [
+        {**rle_ann(rect(0, 0, 12, 12), 3), "iscrowd": 1, "visibility_fraction": 0.1}
+    ]
+    ev._hw_by_image_id[1] = (H, W)
+    ev.reset()
+    ev.process(
+        [{"image_id": 1, "file_name": "1.hdf5"}],
+        [{"instances": make_instances([rect(0, 0, 12, 12)], [0.9], [3])}],
+    )
+    assert ev._records[-1]["num_ignored"] == 1
+    assert ev._records[-1]["num_false_pos"] == 0
+
+
+def test_evaluate_reports_ignored_and_keeps_them_out_of_precision():
+    ev = make_evaluator(num_classes=4, thing_classes=["bg", "c1", "c2", "c3"])
+    run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1)],
+        ([rect(0, 0, 12, 12), rect(25, 25, 38, 38)], [0.9, 0.9], [1, 2]),
+        crowd=[rect(25, 25, 38, 38)],
+    )
+    res = ev.evaluate()["instance_matching"]
+    assert res["num_ignored_total"] == 1
+    assert res["num_pred_total"] == 1
+    assert res["false_positives_total"] == 0
+    assert res["classaware_precision"] == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------- evaluate

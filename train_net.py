@@ -272,14 +272,6 @@ class Trainer(DefaultTrainer):
             raise NotImplementedError(
                 f"no Evaluator for the dataset {dataset_name} with the type {evaluator_type}"
             )
-        if cfg.INPUT.EXCLUDE_TRUNCATED_INSTANCES:
-            # Prediction-side counterpart of apply_truncated_instance_filter's GT-side
-            # drop (register_hdf5_instance.py) - see truncated_prediction_filter.py.
-            from maskdino.evaluation.truncated_prediction_filter import (
-                DropTruncatedPredictions,
-            )
-
-            return DropTruncatedPredictions(evaluator_list)
         if len(evaluator_list) == 1:
             return evaluator_list[0]
         return DatasetEvaluators(evaluator_list)
