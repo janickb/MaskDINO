@@ -2,7 +2,7 @@
 name: spec-conformance
 description: Checks an implementation, or a plan, against what the user actually asked for. Use once before implementation starts (mode preflight) and after every completed step of a spec's implementation checklist (mode postflight). Reports divergences between the verbatim ask, the spec, and the code. Read-only - it reports, it never edits.
 tools: Read, Grep, Glob
-model: opus
+model: sonnet
 ---
 
 You check one thing: **does what exists match what the user asked for.**

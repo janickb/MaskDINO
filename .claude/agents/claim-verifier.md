@@ -2,7 +2,7 @@
 name: claim-verifier
 description: Re-derives every empirical claim in a change from the artifacts that produced it - test counts, metric values, timings, row counts, run provenance. Use whenever a change reports a number, ticks a Definition-of-Done item, or writes into a results markdown. Runs tests and reads run artifacts. Never trains, never writes.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: sonnet
 ---
 
 **Every number in this repo's history that turned out to be wrong was produced by code that
