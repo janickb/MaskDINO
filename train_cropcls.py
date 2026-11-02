@@ -31,7 +31,15 @@ from torch.utils.tensorboard import SummaryWriter
 
 import maskdino  # noqa: F401  - registers the hdf5 datasets
 from cropcls.config import load_config
-from cropcls.data import CropPipeline, StageTimer, dataset_class_names
+from cropcls.crop_folder import build_loader as build_crop_loader
+from cropcls.data import (
+    CropBatch,
+    CropPipeline,
+    StageTimer,
+    apply_truncated_filter,
+    apply_val_stride,
+    dataset_class_names,
+)
 from cropcls.detector import FrozenSingleClassDetector
 from cropcls.modeling import build_classifier
 
@@ -48,8 +56,6 @@ def parse_args():
     p.add_argument("--hungarian", action="store_true",
                    help="score with HungarianInstanceEvaluator (step 8: comparable to the "
                         "8-class baseline's classaware_f1), not just crop top-1")
-    p.add_argument("--val-stride", type=int, default=4,
-                   help="val subsample for --hungarian; 4 matches the baseline's protocol")
     p.add_argument("--device", default="cuda")
     p.add_argument("opts", nargs=argparse.REMAINDER, help="key=value config overrides")
     return p.parse_args()
@@ -157,8 +163,14 @@ def main():
             logger.info("eval: using the run's own config %s (not %s)", probe, args.config)
 
     cfg = load_config(config_path, ov)
+
+    if not (args.eval_only or args.viz_only):
+        base = Path(cfg.output_dir.rstrip("/"))
+        cfg.output_dir = str(base.parent / f"{time.strftime('%Y%m%d%H%M%S')}_{base.name}")
+
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    logger.info("run dir: %s", out)
 
     # --eval-only scores the checkpoint the run PRODUCED, so it ignores the `weights` its
     # config.json records: that field is the run's starting point, and a run initialized
@@ -186,8 +198,24 @@ def main():
         len(class_names), cfg.train_dataset, ", ".join(class_names), cfg.augment_frames,
     )
 
-    logger.info("loading frozen detector: %s", cfg.detector_checkpoint)
-    detector = FrozenSingleClassDetector(cfg, device=args.device)
+    n_val = apply_val_stride(cfg.val_dataset, cfg.val_stride)
+    n_gt = apply_truncated_filter(cfg.val_dataset, cfg.exclude_truncated)
+    logger.info(
+        "val=%s stride=%d -> %d frames, %d GT instances (exclude_truncated=%s)",
+        cfg.val_dataset, cfg.val_stride, n_val, n_gt, cfg.exclude_truncated,
+    )
+
+    # Built on first use, not up front: training from `crop_folder` never needs it, and not
+    # loading it is what makes "zero detector forwards" structural rather than hoped for. It
+    # also leaves its ~177 MiB of VRAM free for a larger crops_per_batch.
+    _det: dict[str, FrozenSingleClassDetector] = {}
+
+    def get_detector() -> FrozenSingleClassDetector:
+        if "d" not in _det:
+            logger.info("loading frozen detector: %s", cfg.detector_checkpoint)
+            _det["d"] = FrozenSingleClassDetector(cfg, device=args.device)
+        return _det["d"]
+
     timer = StageTimer()
 
     # Built where it is consumed, because a pipeline is not free - it reads
@@ -198,7 +226,7 @@ def main():
         is_train = split == "train"
         name = cfg.train_dataset if is_train else cfg.val_dataset
         pipe = CropPipeline(
-            cfg, detector, name, is_train=is_train,
+            cfg, get_detector(), name, is_train=is_train,
             timer=timer if is_train else StageTimer(),
         )
         logger.info("%s=%s (%d frames)", split, name, len(pipe))
@@ -215,10 +243,9 @@ def main():
         return
 
     model = build_classifier(cfg, len(class_names)).to(device)
-    frozen = sum(p.numel() for p in detector.model.parameters())
     logger.info(
-        "classifier: trunk=%s dim=%d trainable=%s | MaskDINO frozen: %s params, 0 trainable",
-        cfg.trunk, model.feature_dim, f"{model.n_trainable():,}", f"{frozen:,}",
+        "classifier: trunk=%s dim=%d trainable=%s",
+        cfg.trunk, model.feature_dim, f"{model.n_trainable():,}",
     )
     if cfg.weights:
         state = torch.load(cfg.weights, map_location="cpu", weights_only=False)
@@ -228,9 +255,11 @@ def main():
     if args.eval_only and args.hungarian:
         from cropcls.export import evaluate_hungarian
 
+        # Mode in the name so both modes can land in the run's own folder. A side folder
+        # has no config.json, so the probe above cannot fire and a wrong crop_size is silent.
         m = evaluate_hungarian(
-            cfg, detector, model, cfg.val_dataset, device,
-            stride=args.val_stride, output_dir=out / "inference",
+            cfg, get_detector(), model, cfg.val_dataset, device,
+            stride=cfg.val_stride, output_dir=out / f"inference_{cfg.score_mode}",
             max_frames=args.val_frames,
         )
         base = {"classagnostic_f1": 0.9521, "classaware_f1": 0.9256,
@@ -243,7 +272,9 @@ def main():
         for k in sorted(m):
             if k.startswith(("classaware_recall_per_class/", "misclassified_per_class/")):
                 logger.info("   %-44s %.4f", k, m[k])
-        (out / "hungarian_eval.json").write_text(json.dumps(m, indent=2))
+        dst = out / f"hungarian_eval_{cfg.score_mode}.json"
+        dst.write_text(json.dumps(m, indent=2))
+        logger.info("wrote %s", dst)
         return
 
     if args.eval_only:
@@ -251,11 +282,22 @@ def main():
         logger.info("val_top1=%.4f val_loss=%.4f over %d crops", m["val_top1"], m["val_loss"], m["val_n"])
         for k, v in m["per_class"].items():
             logger.info("   %-18s %.4f", k, v)
-        (out / "eval.json").write_text(json.dumps(m, indent=2))
+        dst = out / "eval_evalonly.json"
+        dst.write_text(json.dumps(m, indent=2))
+        logger.info("wrote %s", dst)
         return
 
-    train_pipe = build_pipe("train")
-    val_pipe = build_pipe("val")
+    # Validation stays on the live path either way: caching it would need a second folder and
+    # an evaluate() taking a loader, and it would mean deleting the crops breaks re-scoring a
+    # finished run.
+    _pipes: dict[str, CropPipeline] = {}
+
+    def get_val_pipe() -> CropPipeline:
+        if "val" not in _pipes:
+            _pipes["val"] = build_pipe("val")
+        return _pipes["val"]
+
+    train_pipe = None if cfg.crop_folder else build_pipe("train")
     opt = torch.optim.AdamW(model.param_groups(cfg.base_lr, cfg.weight_decay))
     sched = torch.optim.lr_scheduler.OneCycleLR(
         opt, max_lr=cfg.base_lr, total_steps=cfg.max_iter,
@@ -268,13 +310,30 @@ def main():
     writer.add_text("config", f"```json\n{json.dumps(cfg.to_dict(), indent=2)}\n```", 0)
     logger.info("tensorboard: tensorboard --logdir %s", out.parent)
 
-    stream = train_pipe.iter_batches(seed=cfg.seed)
+    if cfg.crop_folder:
+        loader = build_crop_loader(cfg, cfg.crop_folder, is_train=True, seed=cfg.seed)
+        logger.info(
+            "static crops: %d from %s | crops_per_batch=%d, num_workers=%d  "
+            "(ims_per_batch=%d counts FRAMES and is used only by validation)",
+            len(loader.dataset), cfg.crop_folder, cfg.crops_per_batch, cfg.num_workers,
+            cfg.ims_per_batch,
+        )
+
+        def _crop_stream():
+            while True:                      # a fresh iter() reshuffles
+                for x, y in loader:
+                    yield CropBatch(crops=x, labels=y)
+
+        stream = _crop_stream()
+    else:
+        stream = train_pipe.iter_batches(seed=cfg.seed)
     t_start = time.perf_counter()
     running = 0.0
     seen = 0
     last_log = 0
     for it in range(1, cfg.max_iter + 1):
-        batch = next(stream)
+        with timer("data", sync=False):
+            batch = next(stream)
         if len(batch) == 0:
             continue
         x = batch.crops.to(device, non_blocking=True)
@@ -305,15 +364,18 @@ def main():
             running = 0.0
             last_log = it
         if cfg.eval_period and it % cfg.eval_period == 0:
-            m = evaluate(model, val_pipe, device, max_frames=args.val_frames)
+            m = evaluate(model, get_val_pipe(), device, max_frames=args.val_frames)
             logger.info("iter %6d  val_top1=%.4f  val_loss=%.4f", it, m["val_top1"], m["val_loss"])
             _log_eval(writer, m, it)
         if cfg.checkpoint_period and it % cfg.checkpoint_period == 0:
             torch.save({"model": model.state_dict(), "iteration": it}, out / f"model_{it:07d}.pth")
 
     torch.save({"model": model.state_dict(), "iteration": cfg.max_iter}, out / "model_final.pth")
-    m = evaluate(model, val_pipe, device, max_frames=args.val_frames)
+    m = evaluate(model, get_val_pipe(), device, max_frames=args.val_frames)
     logger.info("FINAL val_top1=%.4f val_loss=%.4f  (8-class MaskDINO baseline: 0.9722)", m["val_top1"], m["val_loss"])
+    # The headline comparison is at matched total crops seen, not matched max_iter: the live
+    # arm emits 4 rotations per instance per forward, the static arm one per draw.
+    m["total_crops_seen"] = seen
     for k, v in m["per_class"].items():
         logger.info("   %-18s %.4f", k, v)
     (out / "eval.json").write_text(json.dumps(m, indent=2))

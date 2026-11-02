@@ -35,6 +35,14 @@ class CropClsConfig:
     # cropcls.data.dataset_class_names.
     train_dataset: str = "train_seta_mm"
     val_dataset: str = "val_seta_mm"
+    # Keep every Nth val frame. 4 matches the 8-class baseline's protocol, so classaware_f1
+    # is computed over the same frames. Applied ONCE to the catalog entry, which is what makes
+    # it reach the in-training monitor, --eval-only and --hungarian alike. 1 = no striding.
+    val_stride: int = 4
+    # Drop frame-border-truncated GT before scoring. The 8-class baseline was measured this
+    # way ("stride 4, excl-truncated, 1201 GT"), and stride 4 + this filter reproduces 1201
+    # exactly - so leaving it off scores 26 extra clipped instruments the baseline never saw.
+    exclude_truncated: bool = True
 
     # --- augmentation --------------------------------------------------------
     # The detector is FROZEN, so augmenting its input regularizes nothing - it only
@@ -60,16 +68,17 @@ class CropClsConfig:
                                  # background - tests whether surrounding context helps,
                                  # which the spec's blackout throws away by design.
 
-    # --- static crop cache (spec_static_crops.md) ----------------------------
-    # Directory holding the extracted patches + manifest. Empty = live pipeline.
-    crop_cache: str = ""
-    # Patch bbox is the mask's tight box grown by this many px, so mask_dilate up to
-    # `margin` stays a load-time choice. Loading with mask_dilate > the MANIFEST's margin
-    # raises: trusting this field instead would clip silently.
-    margin: int = 32
-    # Batch size in CROPS for the static loader. ims_per_batch counts FRAMES and keeps
-    # that meaning; the two units must not be confused.
+    # --- static crop folder (spec_static_crops.md) ---------------------------
+    # Folder of per-class crop directories written by tools/extract_crops.py.
+    # Empty = train from the live pipeline instead.
+    crop_folder: str = ""
+    # Stored patch is the mask's tight box grown by this many px. Only `mask_close` needs
+    # the border (it needs margin >= mask_dilate); plain dilation is exact at 0, because
+    # every mask pixel is inside its own tight box.
+    margin: int = 0
+    # Batch size in CROPS. ims_per_batch counts FRAMES and keeps that meaning.
     crops_per_batch: int = 64
+    num_workers: int = 4
 
     # --- crops ---------------------------------------------------------------
     crop_size: int = 224

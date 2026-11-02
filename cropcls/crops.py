@@ -101,8 +101,13 @@ def letterbox_crop(
             which only the step-4 contact sheet wants (to show what the mask removed).
         close: use morphological closing (dilate then erode) instead of plain dilation,
             repairing the mask without growing the silhouette.
-        dilate: grow the mask by this many pixels first. Applied before BOTH the bbox and
-            the blackout, so the grown region is not clipped by a tight box.
+        dilate: grow the mask by this many pixels first, before the blackout. NOTE: this
+            grows the MASK, not the crop region, whenever `box` is passed - and every real
+            caller passes it (`data.py`, `crop_folder.py`). A passed `box` overrides the
+            dilated box below, so dilation fills holes and joins fragments *inside* that box
+            and never widens the field of view. Do not "fix" this to match an earlier version
+            of this docstring: `test_a_passed_box_overrides_the_dilated_box` pins it, and the
+            static crop folder is built on it.
         box: crop region override (e.g. a jittered bbox). Defaults to the mask's tight box.
         photometric: callable applied to the RAW crop before blackout. It must run
             pre-blackout - contrast blends toward the crop mean, and on a ~95%-black crop
@@ -135,8 +140,12 @@ def letterbox_crop(
         # inside `tight`, so dilation by `dilate` reaches at most the expanded box - while
         # turning a 1024^2 op into one over roughly the instrument's own area.
         H, W = mask.shape
-        # Closing needs 2*r of margin: the dilate reaches tight+r, and the erode then
-        # reads an r-neighbourhood of that. Plain dilation only needs r.
+        # Closing needs a wider window than plain dilation, but not for the reason it looks:
+        # the mask is empty outside `tight`, so there is no extra mask content to read. It is
+        # the border convention in close_mask (`~dilate_mask(~d, r)`) - max_pool pads with
+        # -inf, so the window edge reads as FOREGROUND during the erode and foreground leaks
+        # inward by up to r. A 2r window puts that leak outside `tight` where it cannot show.
+        # Measured consequence for a cropped patch: margin >= dilate is required, exactly.
         m = dilate * (2 if close else 1)
         x0 = max(0, tight[0] - m); y0 = max(0, tight[1] - m)
         x1 = min(W, tight[2] + m); y1 = min(H, tight[3] + m)

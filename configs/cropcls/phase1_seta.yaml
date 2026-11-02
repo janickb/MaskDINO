@@ -8,6 +8,12 @@ detector_score_thresh: 0.5
 train_dataset: train_seta_mm
 val_dataset: val_seta_mm
 
+# Static crop folder written by tools/extract_crops.py. Set = train from disk, no detector
+# forward during training; empty = the live pipeline. The mask settings baked in at extraction
+# (margin, iou_floor, runner_up_ceiling, detector) are recorded in <crop_folder>/meta.json.
+#   PYTHONPATH=. python tools/extract_crops.py --config <this> --out crops/train
+crop_folder: crops/train
+
 augment_frames: false   # detector sees clean frames; augmentation is crop-level
 
 crop_size: 224
@@ -16,8 +22,18 @@ rotations: [0, 90, 180, 270]
 iou_floor: 0.5
 runner_up_ceiling: 0.2
 
+# Keep every Nth val frame, applied once to the dataset registration so it reaches the
+# in-training monitor, --eval-only and --hungarian alike. 4 matches the 8-class baseline's
+# protocol, so classaware_f1 is scored over the same frames. 1 = score every frame.
+val_stride: 4
+# Drop frame-border-truncated GT before scoring. The 8-class baseline was measured this way:
+# its protocol is "stride 4, excl-truncated, 1201 GT", and stride 4 + this filter reproduces
+# 1201 exactly on val_seta_mm (4802 -> 4693 untruncated -> 1201 at stride 4). Leaving it off
+# scores 26 extra clipped instruments the baseline never had to classify.
+exclude_truncated: true
+
 # the classifier's trunk (any timm backbone). MaskDINO stays frozen regardless.
-trunk: resnet50
+trunk: resnet50 #resnet50d (3* 3x3 Kernel at the beginning instead of 1*7x7 Kernel (keep more fine data))
 trunk_pretrained: true
 freeze_trunk: false
 
@@ -26,13 +42,17 @@ freeze_trunk: false
 # <output_dir>/model_final.pth.
 weights: ""
 
-base_lr: 0.0001
+base_lr: 0.0003
 weight_decay: 0.05
-max_iter: 20000
-ims_per_batch: 4
+
+max_iter: 4000
+ims_per_batch: 4          # FRAMES per detector forward - validation and the live path only
+crops_per_batch: 64       # CROPS per step when crop_folder is set. The two units differ.
 warmup_iters: 250
-checkpoint_period: 2000
-eval_period: 1000
+# Coarse enough for the quota (~95 MB each), fine enough to pick the checkpoint from BEFORE
+# val loss turns - model_final.pth may not be the best one.
+checkpoint_period: 1000
+eval_period: 500          # 8 points, enough to see the 1500-2500 turn rather than infer it
 amp: true
 
 output_dir: runs/cropcls_phase1_seta
