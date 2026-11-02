@@ -31,10 +31,10 @@ SOLVER:
   IMS_PER_BATCH: 2
   BASE_LR: 0.00001
 DATASETS:
-  TRAIN: ("reclass_setab_v2_mm",)
+  TRAIN: ("train_phase2_set_ab_v3_mm",)
   TEST: ("val_setab_v2_mm",)
 TEST:
-  # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
+  # val_set_ab_mm (inherited from the base config) has 1000 images - every-100-iter
   # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
   EVAL_PERIOD: 1000                   # watch for decoder drift / overfit early
 OUTPUT_DIR: "runs/reclassify_v1_sim_additional_clamp"

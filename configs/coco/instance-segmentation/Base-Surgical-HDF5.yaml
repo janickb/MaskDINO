@@ -5,8 +5,8 @@ _BASE_: maskdino_R50_bs16_50ep_3s.yaml
 # experiment: the mapper, the render resolution (train and test), the periodic-eval
 # subsample, the query count, and the Hungarian evaluator. Experiment knobs -
 # WEIGHTS, NUM_CLASSES, DATASETS, the SOLVER block, scale jitter, MIN_VISIBILITY,
-# FREEZE_AT, NMS_IOU, HUNGARIAN_EVAL.PERIOD - stay in the leaf configs, which differ
-# on all of them.
+# FREEZE_AT, NMS_IOU, HUNGARIAN_EVAL.PERIOD - stay out of this file: in the leaf
+# configs, or in a recipe base shared by comparable leaves (Base-Surgical-Phase1.yaml).
 #
 # It sits between the leaf configs and maskdino_R50_bs16_50ep_3s.yaml deliberately:
 # that file is also the published COCO config in README.md's results table, so

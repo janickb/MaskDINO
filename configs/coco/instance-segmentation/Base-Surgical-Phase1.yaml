@@ -1,0 +1,52 @@
+_BASE_: Base-Surgical-HDF5.yaml
+# Shared recipe for phase-1 training on set A (train_phase1_pool_set_a_mm). The
+# single-class and multiclass leaf configs inherit everything from here and set
+# only DATASETS + OUTPUT_DIR - the class setup follows from the dataset name alone
+# (register_hdf5_instance.py, class_mapping.py):
+#   train_phase1_pool_set_a_mm / val_set_a_mm -> one class per instrument
+#   the same names + "_singleclass"           -> one "surgical-instruments" class
+# Change any other knob here, not in a leaf, so the two runs stay comparable.
+#
+# Values are the multiclass recipe whose checkpoint phase 2 loads
+# (maskdino_R50_surgical_tools_reclassify.yaml).
+MODEL:
+  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
+  SEM_SEG_HEAD:
+    # -1: size the class head from DATASETS.TRAIN[0] (train_net.setup() ->
+    # set_num_classes_from_metadata): 1 for the *_singleclass datasets, N for the
+    # per-instrument ones. Pinning a number here would break one of the two leaves.
+    NUM_CLASSES: -1
+  BACKBONE:
+    FREEZE_AT: 5
+  MaskDINO:
+    TEST:
+      # Per-class mask NMS (see maskdino/config.py). With one class every prediction
+      # shares a label, so single-class runs also suppress overlapping instruments
+      # of different types - the one place the shared value acts differently.
+      NMS_IOU: 0.5
+      HUNGARIAN_EVAL:
+        PERIOD: 4000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
+INPUT:
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  MIN_VISIBILITY: 0.0
+SOLVER:
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.0003
+  LR_SCHEDULER_NAME: "ReduceLROnPlateau"   # adaptive, metric-driven decay - not a fixed schedule
+  MAX_ITER: 20000
+  CHECKPOINT_PERIOD: 5000
+  WARMUP_ITERS: 250
+  WARMUP_FACTOR: 0.001     # added for carrying optimizer state
+  PLATEAU:
+    METRIC: "total_loss"     # training loss, not validation_loss: it is written every step
+    MODE: "min"
+    FACTOR: 0.5              # halve LR on each plateau, rather than PyTorch's default 10x cut
+    PATIENCE: 3              # checks (not iters) with no improvement before cutting
+    CHECK_PERIOD: 300        # iters between checks -> ~67 checks over MAX_ITER=20000
+    MIN_LR: 0.000002
+    THRESHOLD: 1e-2
+TEST:
+  EVAL_PERIOD: 1000
+DATALOADER:
+  NUM_WORKERS: 4

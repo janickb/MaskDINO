@@ -1,53 +1,7 @@
-_BASE_: maskdino_R50_bs16_50ep_3s.yaml
-MODEL:
-  WEIGHTS: "models/maskdino_r50_50ep_300q_hid1024_3sd1_instance_maskenhanced_mask46.1ap_box51.5ap.pth"
-  SEM_SEG_HEAD:
-    # -1: derive the class-head width from the dataset. train_net.setup() sets it
-    # from the registered dataset's effective class count.
-    NUM_CLASSES: -1
-  MaskDINO:
-    NUM_OBJECT_QUERIES: 100
-    TEST:
-      NMS_IOU: 0.5
-      HUNGARIAN_EVAL:
-        ENABLED: True
-        PERIOD: 4000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
-  BACKBONE:
-    FREEZE_AT: 5
+_BASE_: Base-Surgical-Phase1.yaml
+# Multiclass phase-1 run: one class per set-A instrument (NUM_CLASSES -1 -> N).
+# Single-class counterpart: maskdino_R50_surgical_tools_finetune_singleclass.yaml.
 DATASETS:
-  TRAIN: ("train_seta_mm",)
-  TEST: ("val_seta_mm",)
-  TEST_SAMPLE_STRIDE: 4               # periodic eval on every 4th val_seta image (1000 -> 250); override to 1 for a full-set pass
-INPUT:
-  DATASET_MAPPER_NAME: "hdf5_coco_instance"
-  IMAGE_SIZE: 1024
-  MIN_SCALE: 0.8
-  MAX_SCALE: 1.2
-  MIN_VISIBILITY: 0.0
-  MIN_SIZE_TEST: 1024
-  MAX_SIZE_TEST: 1024
-
-# Extension of the 90k run in runs/multi_class_v1 (segm/bbox AP still rising
-# at 90k). Resuming on 4 GPUs at 1 img/GPU, LR scaled linearly with batch
-# size (2->4). Cosine LR decay from BASE_LR to a 1% floor over MAX_ITER.
-SOLVER:
-  IMS_PER_BATCH: 6
-  BASE_LR: 0.0003
-  LR_SCHEDULER_NAME: "ReduceLROnPlateau"   # adaptive, metric-driven decay - not a fixed schedule
-  MAX_ITER: 20000
-  CHECKPOINT_PERIOD: 5000
-  WARMUP_ITERS: 250
-  WARMUP_FACTOR: 0.001 #added for carring optimizer state
-  PLATEAU:
-    METRIC: "total_loss"   # no validation loss in this pipeline; training loss instead
-    MODE: "min"
-    FACTOR: 0.5             # halve LR on each plateau, rather than PyTorch's default 10x cut
-    PATIENCE: 3              # checks (not iters) with no improvement before cutting
-    CHECK_PERIOD: 300        # iters between checks -> ~30 checks over MAX_ITER=15000
-    MIN_LR: 0.000002          # same floor the cosine version used, for comparability
-    THRESHOLD: 1e-2
-TEST:
-  EVAL_PERIOD: 1000
+  TRAIN: ("train_phase1_pool_set_a_mm",)
+  TEST: ("val_set_a_mm",)
 OUTPUT_DIR: "runs/phase1_training_seta_v1-0"
-DATALOADER:
-  NUM_WORKERS: 4

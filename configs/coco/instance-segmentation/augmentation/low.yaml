@@ -6,7 +6,7 @@ _BASE_: ../maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder.yaml
 # alone - keep that in mind when reporting, or hold NOISE_PROB equal across arms.#
 # Shared protocol (held identical across every arm in this wave): base config
 # above (encoder+decoder+head trainable, backbone frozen), DATASETS.TRAIN
-# reclass_setab_mm -> DATASETS.TEST val_setab_mm, COPY_PASTE.ENABLED True with
+# train_phase2_set_ab_mm -> DATASETS.TEST val_set_ab_mm, COPY_PASTE.ENABLED True with
 # CLUSTER_PROB 1.0 and PERSPECTIVE.PROB 0.0. Scale / batch / iters / LR come from
 # that base config (no arm file sets them, so arms can only differ in their dose);
 # seed is set by tools/augmentation/run_aug_sweep.sh. Previous wave used

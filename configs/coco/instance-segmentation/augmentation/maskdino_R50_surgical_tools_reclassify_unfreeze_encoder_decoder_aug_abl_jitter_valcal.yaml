@@ -1,8 +1,8 @@
 _BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_control.yaml
 # --- Per-instance jitter, calibrated to VAL RENDER statistics -----------------
 # Identical in form to abl_jitteronly, but the centres are solved against
-# val_setab_mm's tool-pixel statistics (126.9 mean / 50.5 std) instead of the
-# real photographs in reclass_set_home (130.9 / 53.7).
+# val_set_ab_mm's tool-pixel statistics (126.9 mean / 50.5 std) instead of the
+# real photographs in train_phase2_set_home (130.9 / 53.7).
 #
 # Calibration (same method: real _jitter_appearance over 250 cached crops):
 #   target val renders   -> brightness 0.78, contrast 1.65  (gives 128.1 / 50.7)
@@ -11,7 +11,7 @@ _BASE_: maskdino_R50_surgical_tools_reclassify_unfreeze_encoder_decoder_aug_cont
 #
 # *** LEAKAGE WARNING ***
 # These centres are derived from the EVALUATION set. This arm therefore cannot
-# be used as an honest estimate of generalization on val_setab_mm - it is a
+# be used as an honest estimate of generalization on val_set_ab_mm - it is a
 # diagnostic, run to test whether tuning to the eval renderer beats tuning to
 # real photographs. Compare it against abl_jitteronly (0.9030), NOT against the
 # study's headline numbers. Any reported result must use the real-photo

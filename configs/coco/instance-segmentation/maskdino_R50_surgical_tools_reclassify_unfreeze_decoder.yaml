@@ -26,7 +26,7 @@ MODEL:
       HUNGARIAN_EVAL:
         PERIOD: 2000                 # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
 TEST:
-  # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
+  # val_set_ab_mm (inherited from the base config) has 1000 images - every-100-iter
   # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
   EVAL_PERIOD: 1000                   # watch for decoder drift / overfit early
 OUTPUT_DIR: "runs/reclassify_unfreeze_decoder_v3"

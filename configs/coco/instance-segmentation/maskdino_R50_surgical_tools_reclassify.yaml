@@ -3,7 +3,7 @@ _BASE_: maskdino_R50_bs16_50ep_3s.yaml
 # except sem_seg_head.predictor.class_embed, and retrain the class head on the
 # sparse single-instrument renders (set A + set B together).
 #
-# The head is compact: reclass_setab_mm has N=16 effective classes (set A ids 1-6,8,9
+# The head is compact: train_phase2_set_ab_mm has N=16 effective classes (set A ids 1-6,8,9
 # + set B ids 11-18), so the class head is wider than phase-1's N=8. WEIGHTS must
 # therefore point at an *adapted* checkpoint from tools/adapt_classifier_checkpoint.py,
 # which copies the 8 set-B rows into their matching slots and fresh-inits the 8
@@ -28,8 +28,8 @@ MODEL:
         ENABLED: True                # writes inference/instance_matching_confusion*.{csv,png}
         PERIOD: 1000                  # 4x EVAL_PERIOD - confusion matrix is expensive (~2x per-image eval cost)
 DATASETS:
-  TRAIN: ("reclass_setab_mm",)
-  TEST: ("val_setab_mm",)
+  TRAIN: ("train_phase2_set_ab_mm",)
+  TEST: ("val_set_ab_mm",)
   TEST_SAMPLE_STRIDE: 4 
 INPUT:
   DATASET_MAPPER_NAME: "hdf5_coco_instance"

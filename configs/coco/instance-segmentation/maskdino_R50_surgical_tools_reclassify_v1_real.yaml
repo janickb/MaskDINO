@@ -32,11 +32,11 @@ SOLVER:
   IMS_PER_BATCH: 6
   BASE_LR: 0.00001
 DATASETS:
-  TRAIN: ("reclass_set_home",)
+  TRAIN: ("train_phase2_set_home",)
   TEST: ("val_set_home",)
   TEST_SAMPLE_STRIDE: 4 
 TEST:
-  # val_setab_mm (inherited from the base config) has 1000 images - every-100-iter
+  # val_set_ab_mm (inherited from the base config) has 1000 images - every-100-iter
   # eval now costs ~13 min instead of ~2, so this run takes hours, not ~27 min.
   EVAL_PERIOD: 1000                   # watch for decoder drift / overfit early
 OUTPUT_DIR: "runs/reclassify_unfreeze_encoder_decoder_v3_real_no-phase-1-model"

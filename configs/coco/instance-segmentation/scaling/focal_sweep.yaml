@@ -21,8 +21,8 @@ MODEL:
       HUNGARIAN_EVAL:
         PERIOD: 500
 DATASETS:
-  TRAIN: ("reclass_setab_fixedsurf_mm-1.0x",)
-  TEST: ("val_setab_fixedsurf_mm-1.0x",)
+  TRAIN: ("train_phase2_set_ab_fixedsurf_mm-1.0x",)
+  TEST: ("val_set_ab_fixedsurf_mm-1.0x",)
   TEST_SAMPLE_STRIDE: 4   # in-training monitoring only; the script re-evaluates model_final at stride 1
 INPUT:
   IMAGE_SIZE: 1024
