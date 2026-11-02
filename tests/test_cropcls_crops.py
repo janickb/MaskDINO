@@ -202,3 +202,39 @@ def test_letterbox_close_matches_the_standalone_op():
     _, got = letterbox_crop(img, m, SIZE, dilate=4, close=True)
     _, ref = letterbox_crop(img, close_mask(m, 4), SIZE, dilate=0)
     assert torch.equal(got, ref), "the crop-first fast path must be exact for closing too"
+
+
+def _fragmented_mask():
+    """Dashed shaft + jaws: holes for dilation to close, unlike a solid rectangle."""
+    m = torch.zeros((256, 256), dtype=torch.bool)
+    for i in range(0, 110, 14):
+        m[100:106, 60 + i : 69 + i] = True
+    m[82:124, 106:112] = True
+    m[92:114, 164:186] = True
+    return m
+
+
+def test_a_passed_box_overrides_the_dilated_box():
+    """A passed `box` wins over the box letterbox_crop would compute from the dilated mask.
+
+    Every real caller passes the UNDILATED tight box (`data.py`, `crop_folder.py`), so
+    dilation grows the mask inside that box and never widens the field of view. The static
+    crop folder reproduces the live path only because of this. If someone "fixes" dilation to
+    also grow the crop region, the folder silently stops matching the live pipeline and only
+    classaware_f1 moves - so pin it here.
+    """
+    img = _frame(256, 256)
+    mask = _fragmented_mask()
+    tight = mask_tight_bbox(mask)
+
+    passed, _ = letterbox_crop(img, mask, SIZE, box=tight, dilate=12)
+    computed, _ = letterbox_crop(img, mask, SIZE, box=None, dilate=12)
+    assert not torch.equal(passed, computed), (
+        "box=tight and box=None agree under dilation; the passed box is being ignored"
+    )
+
+    # With no dilation the two boxes coincide, so the override is invisible - which is why
+    # the dilate>0 case above is the one that can fail.
+    a, _ = letterbox_crop(img, mask, SIZE, box=tight, dilate=0)
+    b, _ = letterbox_crop(img, mask, SIZE, box=None, dilate=0)
+    assert torch.equal(a, b)
