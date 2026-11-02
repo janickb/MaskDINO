@@ -48,6 +48,8 @@ from maskdino.evaluation.hungarian_instance_evaluation import (  # noqa: E402
     mask_iou_matrix,
 )
 
+from dataset_names import current_dataset_name  # noqa: E402  (sibling in tools/scaling/)
+
 THRESH = np.round(np.arange(0.10, 0.901, 0.05), 2)
 FLOOR = 0.05  # lowest score kept at all (also the floor for the separability margins)
 
@@ -71,7 +73,9 @@ def main():
     add_maskdino_config(cfg)
     cfg.merge_from_file(os.path.join(run, args.eval_dir, "config.yaml"))
     cfg.DATASETS.TEST_SAMPLE_STRIDE = 1
-    ds = cfg.DATASETS.TEST[0]
+    # older runs' config.yaml still names the val set by its pre-folder-name alias
+    ds = current_dataset_name(cfg.DATASETS.TEST[0])
+    cfg.DATASETS.TEST = (ds,)
     set_num_classes_from_metadata(cfg, ds)
     apply_test_sample_stride(cfg)
     apply_truncated_instance_filter(cfg)
