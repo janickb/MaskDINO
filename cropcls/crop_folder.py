@@ -24,7 +24,7 @@ from PIL import Image
 
 from .augment import PhotometricJitter
 from .config import CropClsConfig
-from .crops import letterbox_crop, mask_tight_bbox, normalize_crop, rotate_k90
+from .crops import letterbox_crop, mask_tight_bbox, to_model_input
 
 __all__ = [
     "CropFolder",
@@ -188,8 +188,8 @@ class CropFolder(torch.utils.data.Dataset):
         tight = mask_tight_bbox(mask)
         if tight is None:
             raise ValueError(f"{path} has an empty mask; re-extract")
-        # Same call as data.py:221-231, including box= the UNDILATED tight box. A passed box
-        # overrides letterbox_crop's dilated one (crops.py:150), so dilation grows the mask
+        # Same call as CropPipeline.build_batch, including box= the UNDILATED tight box. A
+        # passed box overrides letterbox_crop's dilated one, so dilation grows the mask
         # inside this box but never widens it. The live path does that; match it.
         out = letterbox_crop(
             rgb.float(), mask, cfg.crop_size, box=tight,
@@ -199,8 +199,9 @@ class CropFolder(torch.utils.data.Dataset):
         if out is None:
             raise ValueError(f"{path} produced no crop; re-extract")
         deg = self.rotations[int(torch.randint(len(self.rotations), (), generator=self.g))]
-        crop = rotate_k90(out[0], deg)
-        return normalize_crop(crop, cfg.pixel_mean, cfg.pixel_std), label
+        return to_model_input(
+            out, cfg.pixel_mean, cfg.pixel_std, deg, cfg.mask_channel
+        ), label
 
 
 def build_loader(cfg: CropClsConfig, root: str | Path, is_train: bool = True, seed: int = 0):

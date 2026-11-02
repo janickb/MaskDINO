@@ -25,7 +25,12 @@ from cropcls.crop_folder import (
     save_crop,
     write_frame_crops,
 )
-from cropcls.crops import letterbox_crop, mask_tight_bbox, normalize_crop
+from cropcls.crops import (
+    letterbox_crop,
+    mask_tight_bbox,
+    normalize_crop,
+    to_model_input,
+)
 
 # Deliberately NOT sorted: thing_classes puts scalpel before hammer, sorted() does the
 # reverse. A fixture in sorted order would make the real label-order bug invisible.
@@ -85,22 +90,30 @@ def _live(frame, mask, cfg, photometric=None):
         photometric=photometric, mask_only=cfg.mask_only, blackout=cfg.blackout,
         dilate=cfg.mask_dilate, close=cfg.mask_close,
     )
-    return normalize_crop(out[0], cfg.pixel_mean, cfg.pixel_std)
+    return to_model_input(out, cfg.pixel_mean, cfg.pixel_std,
+                          mask_channel=cfg.mask_channel)
 
 
 # --- the folder crop equals the live crop -------------------------------------
 
 
+@pytest.mark.parametrize("blackout", [True, False])
+@pytest.mark.parametrize("mask_channel", [False, True])
 @pytest.mark.parametrize(
     ("dilate", "close"), [(0, False), (8, False), (16, False), (8, True), (16, True)]
 )
-def test_folder_crop_equals_live_crop(tmp_path, dilate, close):
+def test_folder_crop_equals_live_crop(tmp_path, dilate, close, mask_channel, blackout):
     """Over 5 frames, every mask setting. `close=True` is the case where margin matters.
 
     With `close=False` the stored border is provably unused - every mask pixel is inside its
     own tight box - so only the closing cases make the stored extent load-bearing.
+
+    `blackout=False` and `mask_channel=True` are the settings spec_cropcls.md Step 10 ships,
+    and the matrix reached neither before: `_cfg` inherits `blackout: True`, so folder-vs-live
+    identity had never been exercised at the only blackout setting those arms use.
     """
-    cfg = _cfg(mask_dilate=dilate, mask_close=close, margin=16)
+    cfg = _cfg(mask_dilate=dilate, mask_close=close, margin=16,
+               blackout=blackout, mask_channel=mask_channel)
     root, truth = _folder(tmp_path, n=5, margin=16)
     ds = CropFolder(root, cfg, is_train=False)
     assert len(ds) == 5
@@ -108,7 +121,10 @@ def test_folder_crop_equals_live_crop(tmp_path, dilate, close):
     for name, cls, frame, mask in truth:
         got, label = ds[by_name[name]]
         assert ds.class_names[label] == cls
-        assert torch.equal(got, _live(frame, mask, cfg)), f"{name} dilate={dilate} close={close}"
+        assert torch.equal(got, _live(frame, mask, cfg)), (
+            f"{name} dilate={dilate} close={close} "
+            f"mask_channel={mask_channel} blackout={blackout}"
+        )
 
 
 def test_dilating_changes_the_crop(tmp_path):

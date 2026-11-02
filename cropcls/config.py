@@ -82,6 +82,9 @@ class CropClsConfig:
 
     # --- crops ---------------------------------------------------------------
     crop_size: int = 224
+    # Append the instance mask as a 4th input channel, 0.0/1.0, after normalization - the
+    # 0-255 RGB statistics mean nothing for an occupancy channel. 
+    mask_channel: bool = False
     # Lossless pixel permutations on a square canvas; applied after cropping so one
     # detector forward yields 4x the classifier samples (spec section 6, step 5). Live path
     # only - the static cache (spec_static_crops.md) samples one rotation per draw, because
@@ -134,6 +137,14 @@ class CropClsConfig:
     # --- io ------------------------------------------------------------------
     output_dir: str = "runs/cropcls_phase1_seta"
 
+    @property
+    def in_chans(self) -> int:
+        """One definition of the channel count. The model and the crop pipeline disagreeing
+        about it surfaces only as a conv shape error on the first batch, so neither side
+        derives it independently. Not a dataclass field: `asdict` skips it, keeping
+        config.json a record of inputs, and `load_config` keeps rejecting it as a YAML key."""
+        return 3 + int(self.mask_channel)
+
     def __post_init__(self) -> None:
         if not self.detector_config:
             self.detector_config = str(
@@ -162,6 +173,21 @@ class CropClsConfig:
         if bad:
             raise ValueError(
                 f"rotations must be multiples of 90 (lossless on a square crop), got {bad}"
+            )
+        # Both of these would train for hours and measure nothing. Raising beats warning:
+        # the cost of noticing at iteration 4000 is the whole run.
+        if self.mask_channel and self.mask_only:
+            raise ValueError(
+                "mask_channel with mask_only: the RGB channels are already the silhouette, so "
+                "channel 3 is an affine rescaling of channel 0 (mask*255 normalized to "
+                "~+2.25/-2.12, against 1.0/0.0) and carries no information the trunk "
+                "cannot already read. Pick one."
+            )
+        if self.mask_channel and self.freeze_trunk:
+            raise ValueError(
+                "mask_channel with freeze_trunk: the new input weights are initialized to zero "
+                "and freezing pins them there, so the mask channel is a no-op for the whole "
+                "run and the arm reproduces the 3-channel result exactly."
             )
 
     def to_dict(self) -> dict[str, Any]:

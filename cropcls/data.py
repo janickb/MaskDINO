@@ -32,7 +32,7 @@ from maskdino.data.datasets.register_hdf5_instance import (
 from .assign import assign_gt_classes
 from .augment import PhotometricJitter
 from .config import CropClsConfig
-from .crops import letterbox_crop, mask_tight_bbox, normalize_crop, rotate_k90
+from .crops import letterbox_crop, mask_tight_bbox, to_model_input
 from .detector import FrozenSingleClassDetector
 
 __all__ = [
@@ -69,13 +69,21 @@ def apply_val_stride(dataset_name: str, stride: int) -> int:
 
 
 def apply_truncated_filter(dataset_name: str, enabled: bool) -> int:
-    """Drop frame-border-truncated GT instances, once. Returns the remaining instance count.
+    """Mark frame-border-truncated GT as iscrowd=1, once. Returns the SCORED instance count.
 
-    The 8-class baseline was scored this way - its protocol is "stride 4, excl-truncated,
-    1201 GT", and stride 4 plus this filter reproduces exactly 1201 on `val_seta_mm`
-    (4802 GT -> 4693 untruncated -> 1201 at stride 4). Without it we score 1227, i.e. 26
-    extra border-clipped instruments the baseline never had to classify, which makes the
-    comparison pessimistic rather than flattering.
+    Marks, no longer deletes. `apply_truncated_instance_filter` changed under us on main
+    (c4daffb): a cut tool is now an IGNORE region rather than a removed annotation, so it is
+    neither a false negative when missed nor a false positive when detected, and
+    `HungarianInstanceEvaluator` reads `iscrowd` itself. That is why the prediction-side
+    `DropTruncatedPredictions` wrapper could be deleted - it existed only to repair the other
+    half of the deletion, where a correct detection of a cut tool had no GT left to match
+    (26 dropped GT raised false positives 19 -> 45).
+
+    The returned count is therefore non-crowd annotations, not `len(annotations)`: the
+    truncated ones are still in the dicts, and counting them would report 1227 where 1201 is
+    scored. 1201 is the 8-class baseline's protocol ("stride 4, excl-truncated, 1201 GT"),
+    and stride 4 plus this filter still reproduces it exactly on `val_seta_mm`
+    (4802 GT -> 4693 untruncated -> 1201 at stride 4).
 
     `EXCLUDE_TRUNCATED_INSTANCES: true` is already set in the detector's own config.yaml, but
     it does nothing unless something calls this - the flag was inherited and inert.
@@ -83,15 +91,24 @@ def apply_truncated_filter(dataset_name: str, enabled: bool) -> int:
     Frame striding and annotation filtering commute, so the order relative to
     `apply_val_stride` does not change any count.
     """
+
+    def _scored(name: str) -> int:
+        return sum(
+            1
+            for d in DatasetCatalog.get(name)
+            for a in d["annotations"]
+            if a.get("iscrowd", 0) != 1
+        )
+
     if not enabled or dataset_name in TRUNCATED_FILTERED:
-        return sum(len(d["annotations"]) for d in DatasetCatalog.get(dataset_name))
+        return _scored(dataset_name)
     d2 = CfgNode({
         "DATASETS": CfgNode({"TEST": (dataset_name,)}),
         "INPUT": CfgNode({"EXCLUDE_TRUNCATED_INSTANCES": True}),
     })
     apply_truncated_instance_filter(d2)
     TRUNCATED_FILTERED.add(dataset_name)
-    return sum(len(d["annotations"]) for d in DatasetCatalog.get(dataset_name))
+    return _scored(dataset_name)
 
 
 def dataset_class_names(dataset_name: str) -> list[str]:
@@ -174,7 +191,7 @@ class CropRecord:
 
 @dataclass
 class CropBatch:
-    crops: torch.Tensor                       # (B, 3, S, S) normalized
+    crops: torch.Tensor                       # (B, C, S, S) normalized, C = cfg.in_chans
     labels: torch.Tensor                      # (B,) long
     records: list[CropRecord] = field(default_factory=list)
     verdict_counts: dict[str, int] = field(default_factory=dict)
@@ -292,12 +309,12 @@ class CropPipeline:
                     )
                     if out is None:          # empty after the bbox round-trip
                         continue
-                    base, _ = out
                     label = int(a.labels[k])
                     for deg in rots:
                         crops.append(
-                            normalize_crop(
-                                rotate_k90(base, deg), self.cfg.pixel_mean, self.cfg.pixel_std
+                            to_model_input(
+                                out, self.cfg.pixel_mean, self.cfg.pixel_std,
+                                deg, self.cfg.mask_channel,
                             )
                         )
                         labels.append(label)
@@ -322,7 +339,7 @@ class CropPipeline:
                 lab = torch.tensor(labels, dtype=torch.long)
             else:
                 s = self.cfg.crop_size
-                batch = torch.zeros((0, 3, s, s))
+                batch = torch.zeros((0, self.cfg.in_chans, s, s))
                 lab = torch.zeros((0,), dtype=torch.long)
 
         return CropBatch(crops=batch, labels=lab, records=records, verdict_counts=dict(counts))

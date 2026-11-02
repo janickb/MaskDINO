@@ -119,14 +119,35 @@ def _registered_trunc() -> str:
     return name
 
 
-def test_truncated_filter_drops_border_instances():
-    """The baseline dropped these; scoring them makes the comparison pessimistic for us."""
+def test_truncated_filter_stops_scoring_border_instances():
+    """The baseline excluded these; scoring them makes the comparison pessimistic for us."""
     from cropcls.data import apply_truncated_filter
 
     name = _registered_trunc()
-    assert apply_truncated_filter(name, enabled=True) == 1, "the border instance must go"
+    assert apply_truncated_filter(name, enabled=True) == 1, "the border instance must not score"
     from detectron2.data import DatasetCatalog
 
+    DatasetCatalog.remove(name)
+
+
+def test_truncated_filter_marks_iscrowd_rather_than_deleting():
+    """The behaviour main switched to (c4daffb), and the reason the prediction-side
+    DropTruncatedPredictions wrapper could go.
+
+    The annotation must SURVIVE, flagged: HungarianInstanceEvaluator builds its ignore
+    regions from `iscrowd`, so a detection landing on a cut tool is neither a false positive
+    nor counted in num_pred. Deleting it instead left that detection nothing to match, which
+    is what drove false positives 19 -> 45.
+    """
+    from detectron2.data import DatasetCatalog
+
+    from cropcls.data import apply_truncated_filter
+
+    name = _registered_trunc()
+    apply_truncated_filter(name, enabled=True)
+    anns = DatasetCatalog.get(name)[0]["annotations"]
+    assert len(anns) == 2, "the truncated annotation must still be present, not removed"
+    assert [a.get("iscrowd", 0) for a in anns] == [0, 1], "only the border one is an ignore"
     DatasetCatalog.remove(name)
 
 

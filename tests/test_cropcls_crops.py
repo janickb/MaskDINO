@@ -3,7 +3,13 @@
 import pytest
 import torch
 
-from cropcls.crops import letterbox_crop, mask_tight_bbox, normalize_crop, rotate_k90
+from cropcls.crops import (
+    letterbox_crop,
+    mask_tight_bbox,
+    normalize_crop,
+    rotate_k90,
+    to_model_input,
+)
 
 SIZE = 224
 
@@ -238,3 +244,51 @@ def test_a_passed_box_overrides_the_dilated_box():
     a, _ = letterbox_crop(img, mask, SIZE, box=tight, dilate=0)
     b, _ = letterbox_crop(img, mask, SIZE, box=None, dilate=0)
     assert torch.equal(a, b)
+
+
+# --- to_model_input: the tensor the classifier is actually fed ----------------
+
+MEAN = [123.675, 116.28, 103.53]
+STD = [58.395, 57.12, 57.375]
+
+
+def test_to_model_input_is_3_channels_when_the_flag_is_off():
+    img, m = _frame(), _rect_mask(512, 512, 100, 300, 150, 250)
+    out = letterbox_crop(img, m, SIZE)
+    assert to_model_input(out, MEAN, STD).shape == (3, SIZE, SIZE)
+
+
+def test_to_model_input_matches_the_pre_helper_expression():
+    """Keeps the refactor honest: the three crop paths used to spell this out inline as
+    normalize(rotate(crop)). Also pins that normalize and rotate commute - per-channel
+    elementwise against a pixel permutation - which is what lets one helper serve paths
+    that previously rotated first."""
+    img, m = _frame(), _rect_mask(512, 512, 100, 300, 150, 250)
+    out = letterbox_crop(img, m, SIZE)
+    for deg in (0, 90, 180, 270):
+        assert torch.equal(
+            to_model_input(out, MEAN, STD, deg),
+            normalize_crop(rotate_k90(out[0], deg), MEAN, STD),
+        ), deg
+
+
+@pytest.mark.parametrize("deg", [0, 90, 180, 270])
+def test_mask_channel_is_the_letterboxed_mask_not_zeros(deg):
+    """The assertion the equivalence test in test_cropcls_mask_channel.py CANNOT make.
+
+    Zero-initialized input weights ignore channel 3 entirely, so a channel of zeros, of
+    noise, or of a mask rotated out of step with the RGB all pass there identically. This is
+    what pins channel 3 to the actual mask, co-rotated with the pixels it describes.
+    """
+    img, m = _frame(), _rect_mask(512, 512, 100, 300, 150, 250)
+    out = letterbox_crop(img, m, SIZE)
+    x = to_model_input(out, MEAN, STD, deg, mask_channel=True)
+
+    assert x.shape == (4, SIZE, SIZE)
+    assert torch.equal(x[3], rotate_k90(out[1], deg).to(x.dtype))
+    assert set(x[3].unique().tolist()) <= {0.0, 1.0}
+    # non-degenerate in both directions: a constant channel would satisfy the equality above
+    # only if the mask itself were constant, but assert it outright so the fixture cannot rot.
+    assert 0 < float(x[3].sum()) < x[3].numel()
+    # the RGB half is untouched by the flag
+    assert torch.equal(x[:3], to_model_input(out, MEAN, STD, deg))

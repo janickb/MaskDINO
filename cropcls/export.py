@@ -33,10 +33,9 @@ import torch.nn.functional as F
 from detectron2.structures import Boxes, Instances
 
 from maskdino.evaluation.hungarian_instance_evaluation import HungarianInstanceEvaluator
-from maskdino.evaluation.truncated_prediction_filter import DropTruncatedPredictions
 
 from .config import CropClsConfig
-from .crops import letterbox_crop, mask_tight_bbox, normalize_crop
+from .crops import letterbox_crop, mask_tight_bbox, to_model_input
 from .data import CropPipeline, apply_val_stride
 
 logger = logging.getLogger("cropcls.export")
@@ -100,12 +99,13 @@ def evaluate_hungarian(
         dataset_name, d2, distributed=False,
         output_dir=str(output_dir) if output_dir else None,
     )
-    if cfg.exclude_truncated:
-        # Prediction-side counterpart of the GT-side drop (train_net.py:314-321). Once
-        # truncated GT is gone, a still-correct prediction on that same instrument has no GT
-        # left to match and is scored as a false positive - which is exactly what happened:
-        # dropping 26 GT raised false positives from 19 to 45.
-        evaluator = DropTruncatedPredictions([evaluator])
+    # No prediction-side wrapper: `exclude_truncated` now MARKS border-truncated GT
+    # iscrowd=1 (apply_truncated_filter -> apply_truncated_instance_filter) instead of
+    # deleting it, and HungarianInstanceEvaluator reads that flag itself - a cut tool is an
+    # IGNORE region, so it is neither a false negative when missed nor a false positive when
+    # detected. The old DropTruncatedPredictions existed only because deleting the GT left
+    # correct detections with nothing to match (26 dropped GT raised false positives 19 -> 45);
+    # ignore regions fix both sides at once, so there is nothing left for it to do.
     evaluator.reset()
 
     # is_train=False -> no crop-level augmentation; the mapper still yields GT.
@@ -146,7 +146,10 @@ def evaluate_hungarian(
             )
             if out is None:
                 continue
-            crops.append(normalize_crop(out[0], cfg.pixel_mean, cfg.pixel_std))
+            crops.append(
+                to_model_input(out, cfg.pixel_mean, cfg.pixel_std,
+                               mask_channel=cfg.mask_channel)
+            )
             keep_idx.append(k)
 
         if crops:
@@ -173,7 +176,7 @@ def evaluate_hungarian(
             inst.scores = torch.zeros((0,))
             inst.pred_boxes = Boxes(torch.zeros((0, 4)))
 
-        # height/width are what DropTruncatedPredictions reads to locate the frame edge.
+        # height/width size the evaluator's GT and ignore-region rasters for this frame.
         evaluator.process(
             [{"image_id": mapped["image_id"], "height": h, "width": w}],
             [{"instances": inst}],

@@ -53,6 +53,8 @@ def parse_args():
 def denorm(crop: torch.Tensor, mean, std) -> torch.Tensor:
     m = torch.as_tensor(mean).view(-1, 1, 1)
     s = torch.as_tensor(std).view(-1, 1, 1)
+    # A mask_channel run carries a 4th channel that was never normalized by these stats.
+    crop = crop[: len(mean)]
     return (crop * s + m).clamp(0, 255).byte().permute(1, 2, 0)
 
 

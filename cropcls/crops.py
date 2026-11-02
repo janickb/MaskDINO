@@ -17,10 +17,11 @@ import torch.nn.functional as F
 __all__ = [
     "close_mask",
     "dilate_mask",
-    "mask_tight_bbox",
     "letterbox_crop",
-    "rotate_k90",
+    "mask_tight_bbox",
     "normalize_crop",
+    "rotate_k90",
+    "to_model_input",
 ]
 
 
@@ -236,3 +237,36 @@ def normalize_crop(
     mean = torch.as_tensor(pixel_mean, dtype=crop.dtype, device=crop.device).view(-1, 1, 1)
     std = torch.as_tensor(pixel_std, dtype=crop.dtype, device=crop.device).view(-1, 1, 1)
     return (crop - mean) / std
+
+
+def to_model_input(
+    out: tuple[torch.Tensor, torch.Tensor],
+    pixel_mean: list[float],
+    pixel_std: list[float],
+    degrees: int = 0,
+    mask_channel: bool = False,
+) -> torch.Tensor:
+    """`letterbox_crop`'s output -> the exact tensor the classifier is fed.
+
+    One function for all three crop paths (live, static folder, Hungarian export), because
+    the training path and the scoring path disagreeing about the channel layout does not
+    raise - it just reports a worse number.
+
+    Takes the pair `letterbox_crop` returns rather than two tensors, so a crop cannot be
+    paired with some other instance's mask.
+
+    The mask is appended AFTER normalization: `pixel_mean`/`pixel_std` are MaskDINO's three
+    0-255 RGB statistics and an occupancy channel has no business being shifted by them.
+    0.0/1.0 keeps its gradient in the same range as normalized RGB (~+-2), so the
+    zero-initialized input weights learn at a comparable rate. This also puts it after
+    photometric jitter for free - that runs inside `letterbox_crop`, on RGB only, and its
+    (3,1,1) tensors would not survive a 4-channel input.
+
+    Rotation is applied once, to all channels together, so the mask cannot drift out of
+    alignment with the pixels it describes.
+    """
+    crop, crop_mask = out
+    x = normalize_crop(crop, pixel_mean, pixel_std)
+    if mask_channel:
+        x = torch.cat((x, crop_mask.unsqueeze(0).to(x.dtype)), dim=0)
+    return rotate_k90(x, degrees)

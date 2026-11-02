@@ -70,3 +70,34 @@ def test_classifier_weights_are_empty_by_default_and_validate_when_set():
     cfg.weights = "/nope/model_0002000.pth"
     with pytest.raises(FileNotFoundError, match="weights"):
         cfg.validate()
+
+
+def test_mask_channel_is_off_by_default():
+    """spec_cropcls.md fixes 3 RGB channels as the contract; the 4th is an opt-in ablation."""
+    cfg = load_config(CONFIG)
+    assert cfg.mask_channel is False
+    assert cfg.in_chans == 3
+
+
+def test_in_chans_tracks_the_flag_and_is_not_a_config_field():
+    """Derived, like num_classes: one definition, so the model and the crop pipeline cannot
+    disagree about the channel count."""
+    assert "in_chans" not in {f.name for f in dataclasses.fields(CropClsConfig)}
+    with pytest.raises(ValueError, match="unknown config keys"):
+        load_config(CONFIG, {"in_chans": 4})
+
+    cfg = load_config(CONFIG, {"mask_channel": True})
+    assert cfg.in_chans == 4
+    assert "in_chans" not in cfg.to_dict()
+
+
+def test_mask_channel_with_mask_only_is_rejected():
+    """RGB would already be the silhouette, so channel 3 duplicates channel 0 exactly."""
+    with pytest.raises(ValueError, match="mask_only"):
+        load_config(CONFIG, {"mask_channel": True, "mask_only": True})
+
+
+def test_mask_channel_with_freeze_trunk_is_rejected():
+    """Zero-initialized and frozen means the channel is a no-op for the whole run."""
+    with pytest.raises(ValueError, match="freeze_trunk"):
+        load_config(CONFIG, {"mask_channel": True, "freeze_trunk": True})
