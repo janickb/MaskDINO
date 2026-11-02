@@ -30,21 +30,18 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from detectron2.structures import Instances
+from detectron2.structures import Boxes, Instances
 
-from maskdino.data.datasets.register_hdf5_instance import apply_test_sample_stride
 from maskdino.evaluation.hungarian_instance_evaluation import HungarianInstanceEvaluator
+from maskdino.evaluation.truncated_prediction_filter import DropTruncatedPredictions
 
 from .config import CropClsConfig
-from .crops import letterbox_crop, normalize_crop
-from .data import CropPipeline
+from .crops import letterbox_crop, mask_tight_bbox, normalize_crop
+from .data import CropPipeline, apply_val_stride
 
 logger = logging.getLogger("cropcls.export")
 
-__all__ = ["evaluate_hungarian", "STRIDE_APPLIED"]
-
-# Module-level guard for the non-idempotent stride helper.
-STRIDE_APPLIED: set[str] = set()
+__all__ = ["evaluate_hungarian"]
 
 
 def _eval_cfg(detector_cfg, dataset_name: str, num_classes: int, stride: int):
@@ -55,6 +52,21 @@ def _eval_cfg(detector_cfg, dataset_name: str, num_classes: int, stride: int):
     d2.DATASETS.TEST_SAMPLE_STRIDE = stride
     d2.freeze()
     return d2
+
+
+def _mask_boxes(masks: torch.Tensor) -> Boxes:
+    """Each mask's own tight box, which is the frame the masks live in.
+
+    NOT the detector's `pred_boxes`: with no "height"/"width" in the batched dict MaskDINO
+    denormalizes those against the PADDED size while postprocessing masks to the un-padded
+    one (maskdino/maskdino.py:411-413), so they sit in a different frame. The tight box is
+    also what the GT-side filter tests and what the crop is cut from.
+    """
+    rows = []
+    for m in masks:
+        b = mask_tight_bbox(m)
+        rows.append([0.0, 0.0, 0.0, 0.0] if b is None else [float(v) for v in b])
+    return Boxes(torch.tensor(rows, dtype=torch.float32).reshape(-1, 4))
 
 
 @torch.no_grad()
@@ -78,15 +90,22 @@ def evaluate_hungarian(
     # so the evaluator's NUM_CLASSES cannot disagree with it.
     n_classes = int(model.head.out_features)
     d2 = _eval_cfg(detector.d2_cfg, dataset_name, n_classes, stride)
-    if stride > 1 and dataset_name not in STRIDE_APPLIED:
-        apply_test_sample_stride(d2)          # mutates DatasetCatalog in place
-        STRIDE_APPLIED.add(dataset_name)
+    # The stride is normally already applied by train_cropcls from cfg.val_stride, before
+    # anything reads the dataset. This is the fallback for calling evaluate_hungarian
+    # directly; the shared guard makes the second call a no-op rather than a 4 -> 16 restride.
+    apply_val_stride(dataset_name, stride)
 
     # Built AFTER the stride, so its GT index covers exactly the evaluated frames.
     evaluator = HungarianInstanceEvaluator(
         dataset_name, d2, distributed=False,
         output_dir=str(output_dir) if output_dir else None,
     )
+    if cfg.exclude_truncated:
+        # Prediction-side counterpart of the GT-side drop (train_net.py:314-321). Once
+        # truncated GT is gone, a still-correct prediction on that same instrument has no GT
+        # left to match and is scored as a false positive - which is exactly what happened:
+        # dropping 26 GT raised false positives from 19 to 45.
+        evaluator = DropTruncatedPredictions([evaluator])
     evaluator.reset()
 
     # is_train=False -> no crop-level augmentation; the mapper still yields GT.
@@ -109,7 +128,11 @@ def evaluate_hungarian(
             inst.pred_masks = torch.zeros((0, h, w), dtype=torch.bool)
             inst.pred_classes = torch.zeros((0,), dtype=torch.long)
             inst.scores = torch.zeros((0,))
-            evaluator.process([{"image_id": mapped["image_id"]}], [{"instances": inst}])
+            inst.pred_boxes = Boxes(torch.zeros((0, 4)))
+            evaluator.process(
+                [{"image_id": mapped["image_id"], "height": h, "width": w}],
+                [{"instances": inst}],
+            )
             continue
 
         masks = det.masks.cpu()
@@ -142,13 +165,19 @@ def evaluate_hungarian(
             inst.pred_masks = masks[keep_idx]
             inst.pred_classes = pred_classes.cpu().long()
             inst.scores = scores
+            inst.pred_boxes = _mask_boxes(inst.pred_masks)
         else:
             inst = Instances((h, w))
             inst.pred_masks = torch.zeros((0, h, w), dtype=torch.bool)
             inst.pred_classes = torch.zeros((0,), dtype=torch.long)
             inst.scores = torch.zeros((0,))
+            inst.pred_boxes = Boxes(torch.zeros((0, 4)))
 
-        evaluator.process([{"image_id": mapped["image_id"]}], [{"instances": inst}])
+        # height/width are what DropTruncatedPredictions reads to locate the frame edge.
+        evaluator.process(
+            [{"image_id": mapped["image_id"], "height": h, "width": w}],
+            [{"instances": inst}],
+        )
 
     results = evaluator.evaluate() or {}
     return dict(results.get("instance_matching", results))

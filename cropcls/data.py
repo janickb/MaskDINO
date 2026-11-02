@@ -18,10 +18,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
+from detectron2.config import CfgNode
 from detectron2.data import DatasetCatalog, MetadataCatalog
 
 from maskdino.data.dataset_mappers.hdf5_coco_instance_dataset_mapper import (
     Hdf5CocoInstanceDatasetMapper,
+)
+from maskdino.data.datasets.register_hdf5_instance import (
+    apply_test_sample_stride,
+    apply_truncated_instance_filter,
 )
 
 from .assign import assign_gt_classes
@@ -30,7 +35,63 @@ from .config import CropClsConfig
 from .crops import letterbox_crop, mask_tight_bbox, normalize_crop, rotate_k90
 from .detector import FrozenSingleClassDetector
 
-__all__ = ["CropPipeline", "CropBatch", "CropRecord", "StageTimer", "dataset_class_names"]
+__all__ = [
+    "STRIDE_APPLIED",
+    "TRUNCATED_FILTERED",
+    "CropBatch",
+    "CropPipeline",
+    "CropRecord",
+    "StageTimer",
+    "apply_truncated_filter",
+    "apply_val_stride",
+    "dataset_class_names",
+]
+
+# Guard for the non-idempotent stride helper. It lives here rather than in export.py because
+# the in-training monitor and --hungarian must share ONE guard: the helper re-registers the
+# catalog entry with an already-strided list, so a second call strides 4 -> 16 and silently
+# scores a quarter of the frames you think (cropcls/README.md).
+STRIDE_APPLIED: set[str] = set()
+# Same one-shot story for the truncation filter: it also re-registers the catalog entry, so
+# a second call would filter an already-filtered list.
+TRUNCATED_FILTERED: set[str] = set()
+
+
+def apply_val_stride(dataset_name: str, stride: int) -> int:
+    """Keep every `stride`-th val frame, once, in place under the same name. Returns the count.
+    """
+    if stride <= 1 or dataset_name in STRIDE_APPLIED:
+        return len(DatasetCatalog.get(dataset_name))
+    d2 = CfgNode({"DATASETS": CfgNode({"TEST": (dataset_name,), "TEST_SAMPLE_STRIDE": stride})})
+    apply_test_sample_stride(d2)
+    STRIDE_APPLIED.add(dataset_name)
+    return len(DatasetCatalog.get(dataset_name))
+
+
+def apply_truncated_filter(dataset_name: str, enabled: bool) -> int:
+    """Drop frame-border-truncated GT instances, once. Returns the remaining instance count.
+
+    The 8-class baseline was scored this way - its protocol is "stride 4, excl-truncated,
+    1201 GT", and stride 4 plus this filter reproduces exactly 1201 on `val_seta_mm`
+    (4802 GT -> 4693 untruncated -> 1201 at stride 4). Without it we score 1227, i.e. 26
+    extra border-clipped instruments the baseline never had to classify, which makes the
+    comparison pessimistic rather than flattering.
+
+    `EXCLUDE_TRUNCATED_INSTANCES: true` is already set in the detector's own config.yaml, but
+    it does nothing unless something calls this - the flag was inherited and inert.
+
+    Frame striding and annotation filtering commute, so the order relative to
+    `apply_val_stride` does not change any count.
+    """
+    if not enabled or dataset_name in TRUNCATED_FILTERED:
+        return sum(len(d["annotations"]) for d in DatasetCatalog.get(dataset_name))
+    d2 = CfgNode({
+        "DATASETS": CfgNode({"TEST": (dataset_name,)}),
+        "INPUT": CfgNode({"EXCLUDE_TRUNCATED_INSTANCES": True}),
+    })
+    apply_truncated_instance_filter(d2)
+    TRUNCATED_FILTERED.add(dataset_name)
+    return sum(len(d["annotations"]) for d in DatasetCatalog.get(dataset_name))
 
 
 def dataset_class_names(dataset_name: str) -> list[str]:
