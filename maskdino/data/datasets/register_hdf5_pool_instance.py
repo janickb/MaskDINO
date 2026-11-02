@@ -1,9 +1,9 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-"""Live-pool counterpart of register_hdf5_instance.py: registers a "train_<set>"
-split as a LivePoolDataset over sgdata's continuously-replenished image pool
+"""Live-pool counterpart of register_hdf5_instance.py: registers a pool folder
+as a LivePoolDataset over sgdata's continuously-replenished image pool
 (see scene_generator's src/sgdata/pool.py) instead of a static glob'd
-directory. See register_hdf5_instance.py's _TRAIN_POOL_DIRS / register_all_hdf5_instances
-for the set-name -> pool-dir table and the opt-in registration loop.
+directory. register_hdf5_instance.py's register_all_hdf5_instances routes every
+folder whose name contains "_pool_" through here.
 """
 
 import json

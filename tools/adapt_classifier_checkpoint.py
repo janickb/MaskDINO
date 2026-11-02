@@ -94,9 +94,9 @@ def main():
     ap.add_argument("--dst", help="output path (default: <src dir>/model_final_reclass<N>.pth)")
     ap.add_argument(
         "--target-mapping",
-        default="reclass_setab_mm",
+        default="train_phase2_set_ab_mm",
         help="class_mapping.json / run dir / .pth / dataset name for the TARGET "
-        "label space (default: reclass_setab_mm)",
+        "label space (default: train_phase2_set_ab_mm)",
     )
     ap.add_argument(
         "--src-mapping",

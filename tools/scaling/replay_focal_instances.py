@@ -58,6 +58,8 @@ from maskdino.evaluation.hungarian_instance_evaluation import (  # noqa: E402
     mask_iou_matrix,
 )
 
+from dataset_names import current_dataset_name  # noqa: E402  (sibling in tools/scaling/)
+
 
 def decode(seg):
     if isinstance(seg["counts"], str):
@@ -100,7 +102,9 @@ def main():
     add_maskdino_config(cfg)
     cfg.merge_from_file(os.path.join(args.run_dir, args.eval_dir, "config.yaml"))
     cfg.DATASETS.TEST_SAMPLE_STRIDE = 1
-    dataset = cfg.DATASETS.TEST[0]
+    # older runs' config.yaml still names the val set by its pre-folder-name alias
+    dataset = current_dataset_name(cfg.DATASETS.TEST[0])
+    cfg.DATASETS.TEST = (dataset,)
     set_num_classes_from_metadata(cfg, dataset)
     apply_test_sample_stride(cfg)
     apply_truncated_instance_filter(cfg)

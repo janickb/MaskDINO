@@ -28,8 +28,7 @@ _HERE = os.path.dirname(__file__)
 
 def _load(name, *parts):
     """Load a module by file path (like tests/test_copy_paste.py) so the tests don't
-    trigger ``import maskdino``, which registers datasets from absolute data paths.
-    Both modules below import only detectron2/numpy/torch, so this is safe."""
+    trigger ``import maskdino``, which registers datasets from absolute data paths."""
     path = os.path.join(_HERE, "..", *parts)
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -41,8 +40,21 @@ def _load(name, *parts):
 add_maskdino_config = _load(
     "maskdino_config", "maskdino", "config.py"
 ).add_maskdino_config
+
+# The mapper does `from ..augmentations.photometric import ...`. Loading it under a
+# dotted name gives it a __package__ for that relative import to resolve against, and
+# pre-registering photometric at the resolved name means the import is served from
+# sys.modules - the stub parent package itself is never imported.
+_STUB_PKG = "_maskdino_stub.data"
+_load(
+    f"{_STUB_PKG}.augmentations.photometric",
+    "maskdino",
+    "data",
+    "augmentations",
+    "photometric.py",
+)
 build_transform_gen = _load(
-    "coco_instance_new_baseline_dataset_mapper",
+    f"{_STUB_PKG}.dataset_mappers.coco_instance_new_baseline_dataset_mapper",
     "maskdino",
     "data",
     "dataset_mappers",

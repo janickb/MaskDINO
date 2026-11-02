@@ -15,6 +15,7 @@ from ..class_mapping import (
     derive_single_class_mapping,
     remap_gt_category_ids,
 )
+from .images_root import ENV_VAR, resolve_images_root
 from .register_hdf5_pool_instance import (
     _POOL_MIN_FILES,
     _POOL_VIRTUAL_SIZE,
@@ -22,65 +23,21 @@ from .register_hdf5_pool_instance import (
     register_hdf5_pool_instances,
 )
 
-# --- Named data-set variants (e.g. seta/setb) ----------------------------------
-# Each key here is the exact name a config puts in DATASETS.TRAIN/TEST to select
-# that variant - no code change needed to switch between existing ones. Add a
-# new set by adding a dict entry (its name doesn't have to follow any pattern,
-# e.g. a val-only combined set could just be VAL_DIRS["val_setab_mm"] = ...). A
-# variant with no rendered frames yet is skipped with a warning instead of
-# blocking/crashing `import maskdino`.
-_TRAIN_POOL_DIRS = {
-    "train_seta_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase1_pool_set_a_mm",
-}
-_VAL_DIRS = {
-    "val_seta_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_a_mm",
-    "val_setab_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_mm",
-    "val_set_home": "/home/janick.bilang/training/images_dgx-a100/val_set_home",
-    "val_setab_fixedsurf_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm",
-    "val_setab_fixedsurf2_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf2_mm",
-    "val_setab_fixedsurf_larger_forcep_mm": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_larger_forcep_mm",
-    # Focal-length sweep: the same simulations rendered with the camera at
-    # 0.67x / 1.0x / 1.5x focal length (identical filenames across levels).
-    "val_setab_fixedsurf_mm-0.67x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm-0.67x",
-    "val_setab_fixedsurf_mm-1.0x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm-1.0x",
-    "val_setab_fixedsurf_mm-1.5x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm-1.5x",
-    # v2: same finishes, piles held by a tighter containment box (half_extent 0.14 m)
-    # so every tool stays inside the 1.5x frame - one object set for all levels.
-    "val_setab_fixedsurf_mm_v2-0.67x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm_v2-0.67x",
-    "val_setab_fixedsurf_mm_v2-1.0x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm_v2-1.0x",
-    "val_setab_fixedsurf_mm_v2-1.5x": "/home/janick.bilang/training/images_dgx-a100/val_set_ab_fixedsurf_mm_v2-1.5x",
-}
-
-# Single-class ("surgical-instruments") views of train_seta_mm/val_seta_mm - same
-# underlying frames, but every real instrument category_id collapses onto one
-# contiguous class instead of one slot per instrument (see
-# class_mapping.derive_single_class_mapping).
-_TRAIN_POOL_DIRS_SINGLE_CLASS = {
-    "train_seta_mm_singleclass": _TRAIN_POOL_DIRS["train_seta_mm"],
-}
-_VAL_DIRS_SINGLE_CLASS = {
-    "val_seta_mm_singleclass": _VAL_DIRS["val_seta_mm"],
-}
-
-# --- Phase-2 classifier-retrain splits ("reclassification mode") --------------
-# Each entry is a scene_generator classification-mode set holding BOTH instrument
-# sets (deterministic single-instrument renders: 2 sides x 10 rotation steps = 20
-# imgs/instrument, filenames "<instrument>_<A|B>_<NNN>deg.hdf5") and carrying its
-# own unified `instrument_classes` list, so no merge / restamp. Classifier mode
-# omits `coco_annotations`, so they are built on the fly from
-# instance_segmaps + instance_attribute_maps (same output as sgdata.backfill).
-_RECLASS_TRAIN_DIRS = {
-    "reclass_setab_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_mm",
-    "reclass_setab_v2_mm": "/home/janick.bilang/train_images/train_phase2_set_ab_v3_mm",
-    "reclass_set_home": "/home/janick.bilang/train_images/train_phase2_set_home",
-    "reclass_setab_fixedsurf_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm",
-    "reclass_setab_fixedsurf2_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf2_mm",
-    "reclass_setab_fixedsurf_larger_forcep_mm": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_larger_forcep_mm",
-    # Focal-length sweep, paired with the val_setab_fixedsurf_mm-<level> entries.
-    "reclass_setab_fixedsurf_mm-0.67x": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm-0.67x",
-    "reclass_setab_fixedsurf_mm-1.0x": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm-1.0x",
-    "reclass_setab_fixedsurf_mm-1.5x": "/home/janick.bilang/training/images_dgx-a100/train_phase2_set_ab_fixedsurf_mm-1.5x",
-}
+# --- Data sets = folders ------------------------------------------------------
+# Every subfolder of this server's images root (~/training/images_<server>, see
+# images_root.py) is registered under its own folder name, so a config names the
+# folder directly in DATASETS.TRAIN/TEST - adding a set is copying it there (or
+# symlinking it in). Each folder registers twice:
+#   <folder>              one class per instrument (derive_class_mapping)
+#   <folder>_singleclass  same frames, every instrument collapsed onto one
+#                         "surgical-instruments" class (derive_single_class_mapping)
+# A folder whose name contains "_pool_" is a live sgdata image pool (scene_generator
+# keeps replenishing it during training) and is registered as a LivePoolDataset;
+# every other folder is a static set. A folder with no readable frames yet (still
+# rendering/copying), or with unreadable ones, is skipped with a warning instead
+# of blocking/crashing `import maskdino`.
+_SINGLE_CLASS_SUFFIX = "_singleclass"
+_POOL_MARKER = "_pool_"
 
 
 def _first_readable_hdf5(hdf5_dir):
@@ -174,17 +131,15 @@ def apply_truncated_instance_filter(cfg):
         DatasetCatalog.register(name, lambda marked=marked: marked)
 
 
-def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
-    """list_hdf5_dicts over one dir, optionally filtering file paths through
-    `keep(path) -> bool`. 0-byte / unreadable frames are skipped with a warning.
-    Frames without `coco_annotations` (classification mode omits them) get them
-    built on the fly from instance_segmaps + instance_attribute_maps. Raw
-    `category_id`s are remapped to `cm`'s contiguous label space."""
+def list_hdf5_dicts(hdf5_dir, cm):
+    """One dataset dict per frame in `hdf5_dir`, raw `category_id`s remapped to
+    `cm`'s contiguous label space. 0-byte / unreadable frames are skipped with a
+    warning. Frames without `coco_annotations` (scene_generator's classification
+    mode omits them) get them built on the fly from instance_segmaps +
+    instance_attribute_maps (same output as sgdata.backfill)."""
     log = logging.getLogger(__name__)
     dicts = []
     for path in sorted(glob.glob(os.path.join(hdf5_dir, "*.hdf5"))):
-        if keep is not None and not keep(path):
-            continue
         if os.path.getsize(path) == 0:
             continue
         try:
@@ -198,7 +153,7 @@ def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
                         f[schema.INSTANCE_ATTRIBUTE_MAPS][()],
                     )
         except (OSError, KeyError) as exc:
-            log.warning("[reclass] skipping unreadable frame %s: %s", path, exc)
+            log.warning("skipping unreadable frame %s: %s", path, exc)
             continue
         remap_gt_category_ids(annotations, cm)
         dicts.append(
@@ -211,68 +166,8 @@ def _list_hdf5_dicts_filtered(hdf5_dir, cm, keep=None):
             }
         )
     if not dicts:
-        log.warning(
-            "[reclass] 0 usable frames from %s (filter/keep too strict?)", hdf5_dir
-        )
+        log.warning("0 usable frames from %s", hdf5_dir)
     return dicts
-
-
-def register_hdf5_slice(name, hdf5_dir, keep=None):
-    """register_hdf5_instances for one dir + an optional path filter. Derives its
-    own ClassMapping from its own embedded instrument_classes."""
-    with h5py.File(_first_readable_hdf5(hdf5_dir), "r") as f:
-        instrument_classes = json.loads(f[schema.INSTRUMENT_CLASSES][()])
-    cm = derive_class_mapping(instrument_classes)
-    DatasetCatalog.register(
-        name, _cached(name, lambda: _list_hdf5_dicts_filtered(hdf5_dir, cm, keep))
-    )
-    apply_class_mapping_to_metadata(name, cm)
-
-
-def register_reclass_splits():
-    """Registers every _RECLASS_TRAIN_DIRS entry under its dict key, each deriving
-    its own ClassMapping from its own instrument_classes (see register_hdf5_instances) -
-    same shape as the _TRAIN_POOL_DIRS/_VAL_DIRS loops in register_all_hdf5_instances.
-
-    Each reclass train set validates against a plain _VAL_DIRS entry (registered
-    separately by register_all_hdf5_instances) whose own instrument_classes list
-    is already built to match - e.g. reclass_setab_mm validates against
-    "val_setab_mm". No reconciliation needed: train_net.setup() calls
-    assert_train_test_class_mapping_consistent() to fail fast if a config ever
-    pairs a reclass train set with a val set whose mapping doesn't actually
-    match."""
-    log = logging.getLogger(__name__)
-    for name, hdf5_dir in _RECLASS_TRAIN_DIRS.items():
-        if _first_readable_hdf5(hdf5_dir) is None:
-            log.warning(
-                "[reclass] no readable frames under %s; skipping %s dataset "
-                "registration (render the set first)",
-                hdf5_dir,
-                name,
-            )
-            continue
-        register_hdf5_slice(name, hdf5_dir)
-
-
-def list_hdf5_dicts(hdf5_dir, cm):
-    paths = sorted(glob.glob(os.path.join(hdf5_dir, "*.hdf5")))
-
-    dataset_dicts = []
-    for image_id, path in enumerate(paths):
-        with h5py.File(path, "r") as f:
-            height, width = f[schema.COLORS].shape[:2]
-            annotations = json.loads(f[schema.COCO_ANNOTATIONS][()])
-        remap_gt_category_ids(annotations, cm)
-        dataset_dicts.append(
-            {
-                "file_name": path,
-                "image_id": image_id,
-                "height": height,
-                "width": width,
-                "annotations": annotations,
-            }
-        )
-    return dataset_dicts
 
 
 def instrument_classes_from_hdf5(hdf5_dir):
@@ -290,8 +185,7 @@ def instrument_classes_from_hdf5(hdf5_dir):
     `unused_*` dropped); `remap_gt_category_ids` rewrites each annotation's raw
     `category_id` into that space at dataset-listing time.
     """
-    sample_path = sorted(glob.glob(os.path.join(hdf5_dir, "*.hdf5")))[0]
-    with h5py.File(sample_path, "r") as f:
+    with h5py.File(_first_readable_hdf5(hdf5_dir), "r") as f:
         return json.loads(f[schema.INSTRUMENT_CLASSES][()])
 
 
@@ -302,38 +196,43 @@ def register_hdf5_instances(name, hdf5_dir, class_mapping_fn=derive_class_mappin
 
 
 def register_all_hdf5_instances(root):
-    """Registers every _TRAIN_POOL_DIRS/_VAL_DIRS(+_SINGLE_CLASS) entry under its
-    dict key, skipping (with a warning) whichever variant has no rendered frames
-    yet - e.g. a set that's still being generated - so that one not-yet-ready
-    variant can't break `import maskdino` for the others."""
+    """Registers every subfolder of `root` under its folder name, plus its
+    _singleclass view (see "Data sets = folders" at the top). Train/val pairing
+    needs no table either: each set carries its own instrument_classes, and
+    train_net.setup() calls assert_train_test_class_mapping_consistent() to fail
+    fast if a config pairs two sets whose class mappings don't match."""
     log = logging.getLogger(__name__)
-    for name, pool_dir in {**_TRAIN_POOL_DIRS, **_TRAIN_POOL_DIRS_SINGLE_CLASS}.items():
-        if not pool_has_frames(pool_dir):
+    for folder in sorted(os.listdir(root)):
+        hdf5_dir = os.path.join(root, folder)
+        if not os.path.isdir(hdf5_dir):
+            continue
+        is_pool = _POOL_MARKER in folder
+        if not (pool_has_frames(hdf5_dir) if is_pool else _first_readable_hdf5(hdf5_dir)):
             log.warning(
-                "[%s] no frames yet in pool %s; skipping registration", name, pool_dir
+                "[%s] no readable frames under %s; skipping registration", folder, hdf5_dir
             )
             continue
-        class_mapping_fn = (
-            derive_single_class_mapping
-            if name in _TRAIN_POOL_DIRS_SINGLE_CLASS
-            else derive_class_mapping
-        )
-        register_hdf5_pool_instances(
-            name, pool_dir, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES, class_mapping_fn
-        )
-    for name, val_dirname in {**_VAL_DIRS, **_VAL_DIRS_SINGLE_CLASS}.items():
-        val_dir = os.path.join(root, val_dirname)
-        if _first_readable_hdf5(val_dir) is None:
-            log.warning(
-                "[%s] no readable frames under %s; skipping registration", name, val_dir
-            )
-            continue
-        class_mapping_fn = (
-            derive_single_class_mapping if name in _VAL_DIRS_SINGLE_CLASS else derive_class_mapping
-        )
-        register_hdf5_instances(name, val_dir, class_mapping_fn)
-    register_reclass_splits()
+        try:
+            for name, class_mapping_fn in (
+                (folder, derive_class_mapping),
+                (folder + _SINGLE_CLASS_SUFFIX, derive_single_class_mapping),
+            ):
+                if is_pool:
+                    register_hdf5_pool_instances(
+                        name, hdf5_dir, _POOL_VIRTUAL_SIZE, _POOL_MIN_FILES, class_mapping_fn
+                    )
+                else:
+                    register_hdf5_instances(name, hdf5_dir, class_mapping_fn)
+        except (OSError, KeyError, ValueError) as exc:
+            log.warning("[%s] skipping registration, unreadable set: %s", folder, exc)
 
 
-_root = os.getenv("DETECTRON2_DATASETS", "datasets")
-register_all_hdf5_instances(_root)
+_root = resolve_images_root()
+if _root is None:
+    logging.getLogger(__name__).warning(
+        "no ~/training/images_* dir and %s unset; skipping surgical dataset "
+        "registration",
+        ENV_VAR,
+    )
+else:
+    register_all_hdf5_instances(_root)

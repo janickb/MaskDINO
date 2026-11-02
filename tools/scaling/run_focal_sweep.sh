@@ -6,13 +6,13 @@
 #   bash tools/scaling/run_focal_sweep.sh 1.0x 0
 #   SEED=1 bash tools/scaling/run_focal_sweep.sh 1.5x 2
 #   EVAL_ONLY=1 SEED=1 bash tools/scaling/run_focal_sweep.sh 1.5x 2      # redo the full eval of the newest such run
-#   EVAL_ONLY=1 VAL_TAG=v2 bash tools/scaling/run_focal_sweep.sh 1.5x 2  # eval on val_setab_fixedsurf_mm_v2-1.5x -> <run>/eval_full_v2/
+#   EVAL_ONLY=1 VAL_TAG=v2 bash tools/scaling/run_focal_sweep.sh 1.5x 2  # eval on val_set_ab_fixedsurf_mm_v2-1.5x -> <run>/eval_full_v2/
 #   bash tools/scaling/run_focal_sweep.sh 0.67x 6 SOLVER.MAX_ITER 4000   # extra trailing overrides
 #
 # LEVEL is 0.67x | 1.0x | 1.5x and selects the train AND val set together, so an
 # arm can never train on one focal length and validate on another. 1.0x is the
 # control. VAL_TAG picks another val set variant of the same level
-# (val_setab_fixedsurf_mm_<tag>-<level>); its full eval goes to eval_full_<tag>/, so
+# (val_set_ab_fixedsurf_mm_<tag>-<level>); its full eval goes to eval_full_<tag>/, so
 # it never mixes with eval_full/. Everything else comes from
 # configs/.../scaling/focal_sweep.yaml. The whole grid (levels x seeds over several
 # GPUs): tools/scaling/launch_focal_grid.sh.
@@ -31,10 +31,12 @@ esac
 
 SEED="${SEED:-42}"
 CFG="configs/coco/instance-segmentation/scaling/focal_sweep.yaml"
-IMAGES="/home/janick.bilang/training/images_dgx-a100"
-TRAIN_DS="reclass_setab_fixedsurf_mm-${LEVEL}"
+# This server's ~/training/images_<server> (or $SURGICAL_IMAGES_ROOT) - same
+# resolution as the dataset registration; aborts if it is ambiguous or missing.
+IMAGES="$(./.venv/bin/python maskdino/data/datasets/images_root.py)"
+TRAIN_DS="train_phase2_set_ab_fixedsurf_mm-${LEVEL}"
 TAG="${VAL_TAG:+_$VAL_TAG}"
-VAL_DS="val_setab_fixedsurf_mm${TAG}-${LEVEL}"
+VAL_DS="val_set_ab_fixedsurf_mm${TAG}-${LEVEL}"
 
 # NOTE: do NOT timestamp here - train_net.py prefixes OUTPUT_DIR with its own
 # %Y%m%d%H%M%S (see run_aug_sweep.sh for why stamping twice breaks things).
@@ -47,7 +49,7 @@ LOG="${LOGDIR}/${NAME}_$(date +%Y%m%d%H%M%S).log"
 # must hold the same number of frames (same simulations, one per focal length).
 # (|| true: under pipefail, find on a missing dir would abort the script via set -e)
 count_frames() { find "$1" -maxdepth 1 -name '*.hdf5' -size +0 2>/dev/null | wc -l || true; }
-n_train=$(count_frames "$IMAGES/train_phase2_set_ab_fixedsurf_mm-${LEVEL}")
+n_train=$(count_frames "$IMAGES/$TRAIN_DS")
 # EVAL_ONLY never reads the train set. Without it, the train/test class-mapping
 # check in train_net.py silently passes - the eval must then be checked by hand
 # against model_final.pth's own class_mapping.
@@ -77,12 +79,15 @@ RUN=$(ls -dt runs/*_"$NAME" 2>/dev/null | head -1 || true)
 
 # Separate OUTPUT_DIR: --eval-only into the run's own dir would overwrite the
 # in-training inference/ artifacts. The run's saved config.yaml already holds
-# any trailing overrides; the val set is set explicitly so VAL_TAG applies.
+# any trailing overrides; the val set is set explicitly so VAL_TAG applies, and
+# the train set too - a run from before 2026-11-02 still names both by their old
+# aliases (reclass_setab_*/val_setab_*), and an unregistered train name would
+# silently skip the train/test class-mapping check.
 EVAL_OUT="$RUN/eval_full${TAG}"
 echo "[focal] full-val eval (stride ${EVAL_STRIDE:-1}) of $RUN on $VAL_DS -> $EVAL_OUT" | tee -a "$LOG"
 CUDA_VISIBLE_DEVICES="$GPU" ./.venv/bin/python train_net.py --eval-only \
   --num-gpus 1 --config-file "$RUN/config.yaml" \
   MODEL.WEIGHTS "$RUN/model_final.pth" DATASETS.TEST_SAMPLE_STRIDE "${EVAL_STRIDE:-1}" \
-  DATASETS.TEST "(\"$VAL_DS\",)" OUTPUT_DIR "$EVAL_OUT" \
+  DATASETS.TRAIN "(\"$TRAIN_DS\",)" DATASETS.TEST "(\"$VAL_DS\",)" OUTPUT_DIR "$EVAL_OUT" \
   2>&1 | tee -a "$LOG"
 echo "[focal] done: $RUN" | tee -a "$LOG"
