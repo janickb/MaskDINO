@@ -32,6 +32,10 @@ unmerged, so registering an architecture would have blocked this work on that me
 | a zero-GT frame returns empty, never throws | such frames exist in this data (e.g. `012676FD8_01-008.hdf5`) and `(K,0).max(1)` raises | `test_zero_gt_frame_returns_empty_instead_of_throwing` |
 | an 8-class checkpoint is **rejected** | nothing would crash: the detector would just emit 8 logits and the class-agnostic premise would break invisibly | `test_multiclass_checkpoint_is_rejected` |
 | predictions are upsampled; GT is **never** downsampled | at fill 0.070 forcep03/04 are filigree and would thin away | `test_predictions_at_lower_resolution_are_upsampled_not_gt_downsampled` |
+| under `mask_channel`, the 4-channel model **is** the 3-channel model at init | the new first-conv weights are zero, so the arm measures the channel rather than a perturbed trunk | `test_the_4ch_model_is_the_3ch_model_at_init` |
+| ...and the channel is still **learnable** | zero weights ignore channel 3 entirely, so the equivalence above passes just as well on a frozen or detached channel | `test_one_step_moves_the_mask_weights_off_zero` |
+| channel 3 **is** the co-rotated letterboxed mask, in {0,1} | same reason: equivalence at init is satisfied by a channel of zeros or of noise, so the content needs its own assertion | `test_mask_channel_is_the_letterboxed_mask_not_zeros` |
+| all three crop paths emit the **same** channel layout | live, static-folder and `--hungarian` disagreeing does not raise - it just reports a worse number | `test_folder_crop_equals_live_crop` (parametrized over `mask_channel`) |
 
 ## Traps that cost real time
 
@@ -54,6 +58,24 @@ and good masks vanish — depressing even the **class-agnostic** metric by 21 po
 **The single-class checkpoint was trained by branch-41 code.** Its dumped `config.yaml`
 carries `MODEL.MASK_FORMER` keys that this branch does not register, so the merge needs
 `set_new_allowed(True)`. The keys are inert for building a MaskDINO.
+
+**`timm.create_model(in_chans=4)` is NOT a zero-initialized 4th channel.** It routes the
+pretrained weights through `adapt_input_conv`, which tiles the RGB kernels to (R,G,B,R) and
+rescales **all four by 3/4** - so the pretrained RGB path is altered and channel 3 starts as a
+copy of red. `add_mask_input_channel` does the surgery by hand instead, and `in_chans` was
+deleted from `CropClassifier.__init__` so that route is unreachable. `test_timm_in_chans_4_is_not_zero_init`
+pins the trap itself.
+
+**The mask channel's parameter cost is per-trunk, not a constant.** It is one input channel
+on the first conv, so the count is `out_channels x kh x kw`: **3,136** for `resnet50`
+(64x7x7), **288** for `resnet50d` (32x3x3 deep stem) and **1,536** for `convnext_tiny`
+(96x4x4). Quoting 3,136 as "the" cost is wrong for two of the three trunks in the series.
+
+**Checkpoints do not cross `mask_channel`, in either direction.** A 3-channel checkpoint loaded
+into a 4-channel model raises `size mismatch for trunk.conv1.weight` (or `trunk.conv1.0.weight`
+/ `trunk.stem.0.weight`). That is the intended guard, not a bug to paper over - and
+`--eval-only` reads the run's own `config.json`, so the normal path is safe automatically. The
+hazard is passing `weights=<other run>/model_final.pth` on the command line.
 
 **GPU contention dominates the timing.** The same detector forward is 629 ms/frame on a
 95%-contended Quadro RTX 6000 and 125 ms/frame on an idle RTX 2080 Ti — a nominally

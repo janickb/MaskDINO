@@ -1,0 +1,71 @@
+# Mask-channel arm: the instance mask as a 4th input channel.
+# Ground truth: requirements_mask_channel.md. DoD: spec_cropcls.md Step 10.
+#
+# The trunk's first conv gains one ZERO-initialized input channel, so at iteration 0 this is
+# numerically the 3-channel model - the arm measures the channel, not a perturbed trunk.
+#
+# blackout: false is the point. Under blackout: true the RGB is already exactly 0 outside the
+# mask, so channel 3 is near-redundant with it; with the real background kept, channel 3 is the
+# only thing saying which pixels are the instance.
+#
+# THE CONTROL IS NOT A SEPARATE FILE. Launch it from this config so trunk, crop size, LR and
+# mask settings cannot drift, and give it its own output_dir or both arms collide:
+#   PYTHONPATH=. python train_cropcls.py --config configs/cropcls/mask4_r50_c224.yaml \
+#       mask_channel=false output_dir=runs/ctrl_r50_c224
+# The existing runs/20261031* arms are blackout: true and are NOT controls for this.
+
+detector_checkpoint: /home/janick.bilang/dev/MaskDINO/runs/20261007130733_single_class_v2/model_final.pth
+detector_score_thresh: 0.5
+
+# the class count is derived from train_dataset's thing_classes, never stated.
+# Names are the FOLDER names under $SURGICAL_IMAGES_ROOT: registration is dynamic now
+# (register_hdf5_instance.py lists the root), so the old train_seta_mm/val_seta_mm
+# aliases no longer exist. thing_classes is byte-identical either way, so the label
+# space is unchanged - verified against crops/train/meta.json.
+train_dataset: train_phase1_pool_set_a_mm
+val_dataset: val_set_a_mm
+
+# Alpha in these PNGs already holds the mask the 4th channel needs, so no re-extraction.
+crop_folder: crops/train
+
+augment_frames: false   # detector sees clean frames; augmentation is crop-level
+
+crop_size: 224
+rotations: [0, 90, 180, 270]
+
+mask_channel: true
+blackout: false
+# Pinned, not swept. Under blackout: false dilation no longer touches the RGB at all, so it
+# becomes a channel-3-only knob - a second variable, and a different operation from the one
+# that measured +3.5 under blackout: true.
+mask_dilate: 0
+
+iou_floor: 0.5
+runner_up_ceiling: 0.2
+
+val_stride: 4
+exclude_truncated: true
+
+# Pretrained tag PINNED. requirements_feature_map_resolution.md fixed .a1_in1k on both
+# resnet trunks: bare `resnet50d` defaults to ra2_in1k while bare `resnet50` defaults to
+# a1_in1k, which would confound the trunk comparison with a different pretraining recipe.
+trunk: resnet50.a1_in1k
+trunk_pretrained: true
+freeze_trunk: false
+
+# Empty = start from the trunk's ImageNet weights. A 3-channel checkpoint cannot be used here:
+# it dies on a first-conv size mismatch, which is the intended guard.
+weights: ""
+
+base_lr: 0.0003
+weight_decay: 0.05
+
+max_iter: 4000
+ims_per_batch: 4
+crops_per_batch: 64
+warmup_iters: 250
+checkpoint_period: 1000
+eval_period: 500
+amp: true
+
+output_dir: runs/mask4_r50_c224
