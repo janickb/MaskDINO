@@ -18,20 +18,48 @@ MaskDINO provides a instance Level Segmentation Mask, it always predicts the sam
 
 ### Data Models / Schema:
 - use this phase 1 model to get the segmentation masks: /home/janick.bilang/dev/MaskDINO/runs/20261007130733_single_class_v2/model_final.pth
-- use these images to train: /home/janick.bilang/training/images/train_phase1_pool_set_a_mm/
-- use these images to validate: /home/janick.bilang/training/images/val_set_a_mm/
+- use these images to train: `/home/janick.bilang/training/images_lambdablade-6000/train_phase1_pool_set_a_mm/`
+- use these images to validate: `/home/janick.bilang/training/images_lambdablade-6000/val_set_a_mm/`
+  (1024 frames each. The old `training/images` symlink is gone;
+  `register_hdf5_instance.py` resolves the root through `images_root.py`, which globs
+  `~/training/images_*` and **raises** when several match - as they do on `dbe-cia-sl19-01`,
+  so `SURGICAL_IMAGES_ROOT` must point at `images_lambdablade-6000` or `import maskdino`
+  fails before any dataset is registered. A folder name does not identify its data, so
+  `crops/train/meta.json` pins `pool_realpath` and the frame-name digest. The digest no
+  longer separates the two roots - their phase-1 pools are byte-identical copies as of
+  2026-11-03 - it detects pool replenishment.)
 
-**Classes:** 8, from `train_seta_mm` / `val_seta_mm` - `forcep01_mm`, `forcep02_mm`,
-`forcep03_mm`, `forcep04_mm`, `scalpel01_mm`, `hammer01_mm`, `sharpspoon01_mm`,
-`scarstick01_mm`. (Not the 1-class `*_singleclass` registrations - those are the detector's
-label space, not the classifier's.)
+**Classes:** 8 - `forcep01_mm`, `forcep02_mm`, `forcep03_mm`, `forcep04_mm`, `scalpel01_mm`,
+`hammer01_mm`, `sharpspoon01_mm`, `scarstick01_mm`. (Not the 1-class `*_singleclass`
+registrations - those are the detector's label space, not the classifier's.)
+
+**Dataset names changed.** Registration is now by folder name, so the registered sets are
+`train_phase1_pool_set_a_mm` and `val_set_a_mm`. The names `train_seta_mm` / `val_seta_mm`
+used throughout this file and in `cropcls-results.md` are the **old** aliases: they name the
+same data but are no longer registered, so a config naming them raises
+`Dataset 'train_seta_mm' is not registered!`. Read them as historical labels below; the
+Step 10 configs already use the new names.
 
 **Crop / classifier input contract:**
 
 - crop size **224 x 224**, letterboxed: uniform scale on the longest axis, zero padding, no skew
 - classifier input tensor **`(B, 3, 224, 224)`**, float
 - channels **3 (RGB)**. The mask is implicit in the blackout - non-zero pixels are the instrument.
-  A 4th explicit mask channel is an ablation, not the default.
+  A 4th explicit mask channel is an ablation, not the default: `mask_channel: true`
+  (`requirements_mask_channel.md`) appends the letterboxed mask as channel 3, `0.0`/`1.0`, after
+  normalization - the 0-255 RGB statistics have no meaning for an occupancy channel. The trunk's
+  first conv then gains one **zero-initialized** input channel, so at step 0 the 4-channel model
+  is numerically the 3-channel model and the arm measures the channel rather than a perturbed
+  trunk. Checkpoints do not cross the flag in either direction; the first-conv size mismatch is
+  the intended guard. Only meaningful with `blackout: false`, where the mask is the sole cue to
+  which pixels are the instance - under `blackout: true` channel 3 is near-redundant with the
+  already-zeroed background. `blackout: true` nonetheless stays **legal** in code - near-redundant is a
+  weak arm, not a broken one - but it is **not an arm in this series**: the user was offered it
+  and declined (`requirements_mask_channel.md`). Two combinations are rejected outright in `validate()`
+  because they cannot measure anything: `mask_only` makes the RGB channels the silhouette, so
+  channel 3 becomes an exact duplicate of channel 0; and `freeze_trunk` pins the new weights at
+  the zero they were initialized to, so the channel is a literal no-op for the whole run. Both
+  raise rather than warn - the cost of noticing at iteration 4000 is a wasted run.
 - normalization: reuse **MaskDINO's own pixel statistics**, which are ImageNet's scaled to 0-255 -
   `PIXEL_MEAN [123.675, 116.28, 103.53]`, `PIXEL_STD [58.395, 57.12, 57.375]`, `FORMAT: RGB`.
   Divide by 255 first if the trunk expects 0-1 inputs.
@@ -52,7 +80,7 @@ shape matching and forcep03/04 may be near-indistinguishable by construction - t
 - [ ] **BBOX Cropping:** The segmented instances from MaskDINO have to be cropped to its bounding box, scale it along its largest axis, and pad the image. Do not skew it, only uniform scale is acceptable.
 - [ ] **Segmenting of Image:** The segmented instances are used to segment the rgb pixels, everything outside the segmentation mask stays black.
 - [ ] **Class-Type** Use really the segmentation of MaskDINO and use the class type from the groundtruth. Assign the Classtype according to IoU so if the segmentation occurs over two classes in the groundtruth take the class which segmentation map has the higher IoU. The IoU with the underlying groundtruth has to be >0.5 at least though. Check second highest overlap to be lower than < 0.2 in order to have a distinct Groundtruth for this segmented mask. If the second highest overlap is over 0.2, drop this sample from classifying. For doing these calculations, upsample the segmap, do not downsample the image to predict!
-- [ ] **Edge Cases:** If the classifier is unsure, it should output the most probable case. To compare it to the current MaskDINO implementation which also has no "uncertanty state"
+- [ ] **Edge Cases:** If the classifier is unsure, it should output a uncertainity state. For instance also when the follower class is close to the confidence of the best classification.
 - [ ] **Training Image View**Output to me the Images which are used for Training in the classifier, I want to see them with and without segmentation maps and also overlapped segmentation map from the original 
 - [ ] **Phase 1 Train** analogous to the MaskDINO training, lets train this Classifier in a first step on Phase 1 Training images. 
 - [ ] **Phase 2 Train** this is not part of this features, leave it out
@@ -85,8 +113,15 @@ shape matching and forcep03/04 may be near-indistinguishable by construction - t
 
       Verified on 20 real frames: 108 assigned, 1 dropped contaminated, 1 dropped low-IoU
       (98.2% assignment rate, consistent with the detector's 2.1% class-agnostic FN).
+      Confirmed over the **whole 1024-frame pool** by `tools/extract_crops.py` (2026-10-28,
+      `dbe-cia-sl19-01`, GPU 0 idle while 7 of 8 were at 94-100%): **4623 assigned, 26
+      dropped low-IoU, 1 dropped contaminated = 99.4%**, 4.51 crops/frame, 751 ms/frame,
+      12.8 min, 186 MB.
 
-- [x] **Unit tests** cover bbox cropping, segmentation and class assignment - 32 passing:
+- [x] **Unit tests** cover bbox cropping, segmentation and class assignment - 139 passing in the
+      `test_cropcls_*` set, 305 in the whole suite (measured 2026-11-02; the suite excludes
+      `tests/test_fixed_size_crop_seg_padding.py`, which fails to *collect* on `origin/main`
+      too - it loads a mapper by file path and upstream gave that mapper a relative import):
       `tests/test_cropcls_crops.py` (square output, aspect ratio preserved 10:1, background
       exactly 0, empty mask rejected not NaN, rotations lossless),
       `tests/test_cropcls_assign.py` (assigned / low-IoU / contaminated, **zero-GT frame**,
@@ -160,13 +195,20 @@ cropcls/
   detector.py             frozen single_class_v2 wrapper -> masks + scores
   crops.py                letterbox crop + mask blackout        (step 2)
   assign.py               IoU -> GT class, runner-up guard      (step 3)
+  augment.py              crop-level photometric jitter
   viz.py                  the "Training Image View" deliverable (step 4)
-  data.py                 loader: detect -> assign -> crop -> augment (step 5)
+  data.py                 LIVE loader: detect -> assign -> crop -> augment (step 5)
+  crop_folder.py          STATIC loader: crops/<class>/*.png   (spec_static_crops.md)
+  export.py               Hungarian eval against the baseline's own evaluator
   modeling/classifier.py  CNN trunk + global pool + linear head    (step 6)
-  metrics.py              top-1 on matched masks, timing aggregation
-train_cropcls.py      own training loop, --eval-only, --viz-only
+tools/extract_crops.py  writes the static crop folder, one forward per frame
+train_cropcls.py        own training loop, --eval-only, --viz-only
 configs/cropcls/phase1_seta.yaml
-tests/test_cropcls_{crops,assign,detector,timing}.py
+configs/cropcls/mask4_{r50,r50d,cxt}_c{224,448}.yaml   # Step 10 arms
+tests/test_cropcls_{assign,augment,classes,config,crop_folder,crops,detector,eval_cfg,mask_channel}.py
+
+No `metrics.py`: top-1 lives in `train_cropcls.evaluate`, the timing table in
+`data.StageTimer`. No `test_cropcls_timing.py` either - see step 5.
 ```
 
 - [x] **Step 0 - scaffolding.** Package + config dataclass + `configs/cropcls/phase1_seta.yaml`.
@@ -214,7 +256,9 @@ tests/test_cropcls_{crops,assign,detector,timing}.py
       step needs GT on val as much as on train; `tfm_gens=[]` makes it an identity transform. It
       returns `instances.gt_masks` as an `(N,H,W)` bitmask tensor and `gt_classes`, so no mapper
       change is needed. Index the pool with `d[i]`, not `for r in d`. Instrument every stage.
-      **Verify:** `tests/test_cropcls_timing.py` smoke + a printed per-stage table
+      **Verify:** the per-stage table printed by `data.StageTimer` at the end of every run -
+      measured below. `tests/test_cropcls_timing.py` was named here but never written; the
+      table is the evidence, and a unit test cannot produce it.
       (scene gen / augment / detector forward / upsample+IoU / crop / collate). **Report the
       timings before step 7 picks `MAX_ITER`.** If the detector forward dominates, the likely cause
       is MSDeformAttn running its pure-PyTorch fallback (`CUDA_HOME` is empty here, there is no
@@ -245,7 +289,10 @@ tests/test_cropcls_{crops,assign,detector,timing}.py
       pool -> `nn.Linear(C, 8)`. Trunk
       pluggable (`detectron2_resnet` / `timm`); `timm 1.0.28` is present. Stock PyTorch ops only.
       If the trunk is frozen and uses real `BatchNorm2d`, pin it to `.eval()`.
-      **Verify:** forward shape test; parameter count printed.
+      **Verify:** `tests/test_cropcls_mask_channel.py::test_the_classifier_accepts_3_channels`
+      (forward shape); parameter count printed by `train_cropcls.py`.
+      (The `mask_channel` conv surgery also lives in this file, but its obligations are Step
+      10's - this step stays ticked on the 3-channel contract it was signed off against.)
 
 - [x] **Step 7 - training loop** (`train_cropcls.py`). Own loop: AMP, checkpoint save/load, LR via
       `maskdino/solver`, detectron2 `EventStorage` + writers, `--eval-only`. Cross-entropy over 8
@@ -265,5 +312,44 @@ tests/test_cropcls_{crops,assign,detector,timing}.py
 
 - [ ] **Step 9 - full run** at the `MAX_ITER` chosen from the step-5 timings.
 
+- [ ] **Step 10 - mask-channel arm** (`requirements_mask_channel.md`). Six configs: `resnet50` /
+      `resnet50d` / `convnext_tiny` x crop 224 / 448, all `blackout: false mask_channel: true`,
+      all `mask_dilate: 0` (under `blackout: false` dilation no longer touches RGB at all, so it
+      becomes a channel-3-only knob and a second variable; pinned here, not swept).
+      The first conv is rebuilt with one extra zero input channel, located via
+      `pretrained_cfg["first_conv"]`. Never `timm.create_model(in_chans=4)`: that routes the
+      weights through `adapt_input_conv`, which tiles RGB to (R,G,B,R) and rescales all four by
+      3/4 - altering the pretrained path and seeding channel 3 with a copy of red.
+
+      Each arm needs a **`blackout: false mask_channel: false` control at the same trunk, crop
+      size and LR**, launched from the same config with `mask_channel=false` and **its own
+      `output_dir=`** - both arms of a pair otherwise inherit one `output_dir` and the run folder
+      does not say which is which (that exact mix-up already cost two renames, see
+      `cropcls-results.md` section 5). No existing run is a control: the `20261031*` arms are all
+      `blackout: true`, and the one `blackout: false` measurement that exists (r5, 0.7982, **-7.8
+      points** - worst of twelve) predates the static crop folder and used bbox jitter, which is
+      no longer a config field. That -7.8 is the level all six arms start from.
+
+      **Verify:** `tests/test_cropcls_mask_channel.py` - the 4-channel model's output is
+      bit-identical to the 3-channel model's at init on all three trunks, AND one optimizer step
+      moves the channel-3 weights off zero (the equivalence alone is satisfied by a channel of
+      garbage, since zero weights ignore any input). `tests/test_cropcls_crops.py` -
+      `test_mask_channel_is_the_letterboxed_mask_not_zeros`: channel 3 takes only `{0.0, 1.0}`,
+      equals `rotate_k90(crop_mask, deg)` for each of 0/90/180/270, and is non-degenerate.
+      `tests/test_cropcls_crop_folder.py` - folder-vs-live bit identity holds at
+      `blackout: false` and with the channel on, since that is the only setting these arms use.
+      Results land in `cropcls-results.md` as one table of twelve rows, each naming its run id,
+      trunk, crop size and channel count. Seed variance on `classaware_f1` is 0.82 points
+      (`cropcls-results.md` section 5), so a gap under ~1.6 points is not rankable - report it as
+      unresolved, not as a result.
+
 **Out of scope (explicit):** phase 2 / set B, COCO AP as a headline metric (argmax cannot hedge
-the way `instance_inference`'s `topk(100)` does), any modification to `maskdino/` or `train_net.py`.
+the way `instance_inference`'s `topk(100)` does), any modification to `maskdino/` or `train_net.py`. The owner made a change to register_hdf5_instance.py, in order to register the dataset correctly, this change is approved. (That change has since been superseded by `maskdino/data/datasets/images_root.py`, which resolves the images root from `$SURGICAL_IMAGES_ROOT` or a single `~/training/images_*` match; same approval, same carve-out.)
+
+Out of scope for **Step 10** specifically (`requirements_mask_channel.md`): adapting a checkpoint
+across `mask_channel` in either direction; a `blackout: true` 4-channel arm; and feeding an
+**undilated** mask in channel 3 while the blackout uses the dilated one. That last one is the
+item a later reader will try to "fix": channel 3 is whatever `letterbox_crop` returns, which is
+the **post-dilation** mask, and decoupling them would need `letterbox_crop` to return a second
+mask. The six configs pin `mask_dilate: 0`, where the two coincide and the question does not
+arise.
