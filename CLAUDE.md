@@ -26,17 +26,35 @@ This is a **git worktree**. Run everything from `/home/janick.bilang/dev/MaskDIN
 
   The `-m` form is what puts cwd on `sys.path`. Any other form is an **ImportError, not a test
   failure** — do not read it as a broken test.
+- **Scripts in `tools/` need `PYTHONPATH=.`** for the same reason: a script's `sys.path[0]` is
+  its own directory, so `python tools/anything.py` dies on `import maskdino`. This affects
+  every tool here, not just new ones. Their docstrings predate the worktree and omit it.
 - Other interpreters on this host are dead ends: `miniforge3/envs/myenv` has torch but no
   pytest; `/usr/bin/pytest` has no torch; putting `/usr/lib/python3/dist-packages` on
   `PYTHONPATH` shadows the venv's numpy and breaks the torch import.
 - `testpaths = ["tests"]`, flat `tests/`, no `conftest.py`. Lint: `ruff`.
-- **`training/images` is a per-host symlink and nothing warns loudly if it is missing** - every
-  dataset registration is skipped with an info-level line and `DatasetCatalog.list()` comes back
-  without `train_seta_mm`, so the failure looks like "dataset not registered", not "no symlink".
-  On `dbe-cia-sl19-01` it points at `images_lambdablade-6000` (1024 frames, frame-name digest
-  `d0cd49821f66`). The sibling `images_dgx-a100` is a **different** 1024-frame render of the same
-  scene set, and a run's `config.json` records only the dataset *name*, so it does not identify
-  which render was used - check the digest before comparing numbers across hosts.
+- **`export SURGICAL_IMAGES_ROOT=/home/janick.bilang/training/images_lambdablade-6000` before
+  anything that imports `maskdino` on this host.** `images_root.py` globs `~/training/images_*`
+  and **raises** on more than one match; `dbe-cia-sl19-01` has three
+  (`images_babylambda1-2080`, `images_dgx-a100`, `images_lambdablade-6000`), and the variable is
+  set neither in the environment nor in `~/.bashrc`. So a bare `import maskdino` dies with
+  `RuntimeError: several image roots match ~/training/images_*` - at import, before any test or
+  training code runs. The old `training/images` symlink is **gone**; this replaced it.
+- The roots were once **different renders of the same scene sets**, and older notes say to
+  tell them apart by the frame-name digest. That no longer holds for the set in use:
+  measured 2026-11-03, `images_dgx-a100/train_phase1_pool_set_a_mm` and
+  `images_lambdablade-6000/train_phase1_pool_set_a_mm` have the **same 1024 frame names and
+  sizes and the same bytes** (3 files hashed in full), digest `0d90fc4eb1bf` for both.
+  `images_babylambda1-2080` has no phase-1 pool at all. So the digest **cannot** say which
+  root a run used - it only catches the pool being replenished, which does change frame names.
+  A run's `config.json` records only the dataset *name*, so what identifies the data is
+  `crops/<split>/meta.json`, which pins `pool_realpath` as well as the digest. Digests quoted
+  in older docs (`d0cd49821f66`, `abe2ae25810c`) match nothing on disk now.
+- **Datasets are registered by folder name**, so the sets are `train_phase1_pool_set_a_mm` and
+  `val_set_a_mm`. The older names `train_seta_mm` / `val_seta_mm` appear all over the specs and
+  results and are **not registered any more**; `configs/cropcls/phase1_seta.yaml` and
+  `phase1_seta_type2.yaml` still name them and will raise
+  `Dataset 'train_seta_mm' is not registered!`. The six `mask4_*` configs use the new names.
 - Classifier entry point: `train_cropcls.py`. Runs land in `runs/<name>/`.
 - **Expect this warning and do not act on it:** `MultiScaleDeformableAttention CUDA op is not
   compiled; using the pure-PyTorch fallback`. The fallback is **deliberate** — the main
