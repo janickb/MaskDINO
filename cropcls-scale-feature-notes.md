@@ -113,10 +113,13 @@ exactly why it may be a shortcut that evaporates under a different camera setup.
 
 Before trusting any gain from this feature:
 
-- Score it on `images_dgx-a100` as well as `images_lambdablade-6000`. Per `CLAUDE.md` these
-  are different 1024-frame renders of the same scene set and `config.json` records only the
-  dataset *name*, so check the frame-name digest (`d0cd49821f66` on
-  `dbe-cia-sl19-01`) before comparing numbers across hosts.
+- Score it on a **genuinely different camera setup**. The obvious candidate on this host is
+  not one: `images_dgx-a100/train_phase1_pool_set_a_mm` and
+  `images_lambdablade-6000/train_phase1_pool_set_a_mm` are byte-identical copies as of
+  2026-11-03 (same 1024 frame names and sizes, digest `0d90fc4eb1bf` for both), so scoring on
+  both measures nothing. An older note here cited digest `d0cd49821f66` as the discriminator;
+  it matches nothing on disk now. Testing this needs a render with varied camera distance,
+  which does not exist yet.
 - Both probes above ran on `crops/train`, i.e. the `IoU >= 0.5 AND runner_up < 0.2`
   population. That is the same clean-isolated-instance bias that made crop top-1 mislead in
   both directions (`CLAUDE.md`). Treat these numbers as cue-existence only.
