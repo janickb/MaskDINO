@@ -191,6 +191,37 @@ readout.
 original "18.6 hours, caching is a prerequisite" conclusion was mostly an artifact of the
 shared card; the real figure is ~5.4 h uncached, and caching is an optimization.
 
+**convnext_tiny beats resnet50 by 5.68 points at crop 448.** On `dbe-cia-sl19-01`,
+2026-10-31. The run now at `runs/20261031121447_cxt_c448_dil0_lr1e4` was originally created as
+`..._r50_c448_dil0_lr1e4` despite being configured `trunk: convnext_tiny`; the real control was
+re-run as `..._REAL_r50_...`. **Both directories were renamed on 2026-10-31 to match their
+configs** (`cxt` / `r50`, `REAL_` dropped) and their stored `output_dir` patched to match, so
+the names below are the current ones. Both configs are otherwise identical (`base_lr 1e-4`,
+crop 448, `dilate_px 0`, `freeze_trunk false`, 4000 iter, seed 0,
+`train_seta_mm` / `val_seta_mm`):
+
+| run dir | `trunk` | `classaware_f1` | `classagnostic_f1` |
+|---|---|---|---|
+| `20261031121447_cxt_c448_dil0_lr1e4` | `convnext_tiny` | 0.9391 | 0.9808 |
+| `20261031140925_r50_c448_dil0_lr1e4` | `resnet50` | 0.8823 | 0.9808 |
+
+Both `score_mode=detector`. The identical `classagnostic_f1` confirms the same frozen detector
+and the same masks, so the whole gap is the trunk. n=1: this sits outside the six-run round
+above and has not been seed-repeated.
+
+**Which chain drove which run.** The sweeps were run as chained background commands that wrote
+`TRAINED` / `SCORED` / `ALLDONE` progress markers to `runs/*.out`, while each step's real stdout
+went to its own `runs/*.log`. Both sets were transient and were cleaned up on 2026-10-31; the
+table below is transcribed from them and is now the only record of the grouping:
+
+| chain | runs it drove |
+|---|---|
+| `sweep_dil0` / `dil8` / `dil32` / `dil64` | the four `20261030122636_c448_dil*` |
+| `stem_r50_224` / `stem_r50d_224` / `stem_r50d_448` | the three `20261031115041_*` |
+| `ctrl_chain` (the only one with an `ALLDONE`) | scored the convnext run above, then trained the r50 control |
+
+`c448_dil4` and `c448_dil16` predate the sweep batch and had no marker file.
+
 ## 6. What to try next
 
 1. **Seed-repeat the winning radius.** Every dilation point is n=1 and 3/8/16 is
