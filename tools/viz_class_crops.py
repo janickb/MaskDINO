@@ -60,7 +60,7 @@ def main():
         for k in torch.where(a.keep)[0].tolist():
             lab = int(a.labels[k])
             if lab in found and len(found[lab]) < args.n:
-                out = letterbox_crop(img, pm[k], cfg.crop_size)
+                out = letterbox_crop(img, pm[k], cfg.crop_size, pad_frac=cfg.pad_frac)
                 if out is not None:
                     found[lab].append((out[0], float(a.best_iou[k])))
 

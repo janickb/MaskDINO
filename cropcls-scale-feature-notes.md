@@ -203,10 +203,13 @@ does not raise - it just reports a worse number." Same hazard, new field.
    a run.
 5. **`in_chans` stays 3 or 4.** This adds no channel, so it composes with the mask-channel
    arms rather than conflicting with them.
-6. **Static folder needs no re-extraction.** Patches are stored at native resolution and
-   alpha carries the mask, so `(h, w, area)` is recoverable from the PNG as it sits.
-   Verify `margin: 0` in the leaf config — a non-zero margin makes the PNG dimensions the
-   *grown* box, not the tight one.
+6. **Static folder needs no re-extraction**, but do NOT read the size off the PNG's
+   dimensions. Since the crop-padding change (2026-11-04) the stored patch is the tight box
+   grown by `pad_frac`, so PNG dimensions are the *grown* box and reading them as the instance
+   size inflates every figure by `(1 + 2*pad_frac)` — 1.2x at the default 0.10. A
+   plausible-looking number, and nothing raises. Alpha still carries the mask, so take
+   `mask_tight_bbox(alpha)` and derive `(h, w, area)` from that; it is exact regardless of how
+   the folder was extracted.
 7. **Config:** one flag, `scale_feats: bool = False`, plus whatever names the
    additive/FiLM choice. `validate()` should reject `scale_feats` with `freeze_trunk` only if
    FiLM is used on frozen features — the additive head is trainable regardless, so unlike

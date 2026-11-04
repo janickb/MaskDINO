@@ -4,9 +4,13 @@ Pure tensor ops - no detectron2, no model, no config object - so this is unit-te
 on its own (spec_cropcls.md section 6, step 2).
 
 The crop is taken from the **mask's tight bounding box**, not from the detector's learned
-`pred_boxes`. That keeps the crop and the blackout self-consistent: every non-zero pixel
-of the returned crop is inside the mask by construction, which a learned box can violate
-in either direction (clipping the mask, or padding it with slack).
+`pred_boxes`, so the crop and the blackout stay self-consistent - a learned box can violate
+that in either direction, clipping the mask or padding it with slack.
+
+`pad_frac` then grows that box by a fraction of its own size on each side. It is the only thing
+here that widens the field of view: `dilate` grows the MASK within the region, so with
+`blackout=True` every non-zero pixel is still inside the mask, while a padded border is real
+background and shows only when `blackout=False`.
 """
 
 from __future__ import annotations
@@ -20,9 +24,28 @@ __all__ = [
     "letterbox_crop",
     "mask_tight_bbox",
     "normalize_crop",
+    "pad_box",
     "rotate_k90",
     "to_model_input",
 ]
+
+
+def pad_box(
+    box: tuple[int, int, int, int], pad_frac: float, H: int, W: int
+) -> tuple[int, int, int, int]:
+    """Grow a box by `pad_frac` of its OWN width/height on each side, clipped to HxW.
+
+    Per-axis and relative, which is the whole point: the letterbox scales every crop onto the
+    same canvas, so a fixed pixel border would land as a different fraction of that canvas for
+    a 12 px instance than for a 505 px one (the range measured over `crops/train`). Relative
+    growth puts the silhouette at 1/(1 + 2*pad_frac) of the canvas edge for every instance.
+    """
+    if pad_frac <= 0:
+        return box
+    x0, y0, x1, y1 = box
+    dx = round((x1 - x0) * pad_frac)
+    dy = round((y1 - y0) * pad_frac)
+    return (max(0, x0 - dx), max(0, y0 - dy), min(W, x1 + dx), min(H, y1 + dy))
 
 
 def dilate_mask(mask: torch.Tensor, radius: int) -> torch.Tensor:
@@ -89,6 +112,7 @@ def letterbox_crop(
     dilate: int = 0,
     close: bool = False,
     box: tuple[int, int, int, int] | None = None,
+    pad_frac: float = 0.0,
     photometric=None,
     mask_only: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor] | None:
@@ -104,12 +128,18 @@ def letterbox_crop(
             repairing the mask without growing the silhouette.
         dilate: grow the mask by this many pixels first, before the blackout. NOTE: this
             grows the MASK, not the crop region, whenever `box` is passed - and every real
-            caller passes it (`data.py`, `crop_folder.py`). A passed `box` overrides the
-            dilated box below, so dilation fills holes and joins fragments *inside* that box
-            and never widens the field of view. Do not "fix" this to match an earlier version
-            of this docstring: `test_a_passed_box_overrides_the_dilated_box` pins it, and the
-            static crop folder is built on it.
+            caller passes it. A passed `box` overrides the dilated box below, so dilation fills
+            holes and joins fragments *inside* the crop region and never widens the field of
+            view; `pad_frac` is the knob that widens it. Do not "fix" this to match an earlier
+            version of this docstring: `test_a_passed_box_overrides_the_dilated_box` pins it,
+            and the static crop folder is built on it.
         box: crop region override (e.g. a jittered bbox). Defaults to the mask's tight box.
+        pad_frac: grow the crop region by this fraction of its own width/height on each side,
+            after `box` is resolved and before the crop is taken. Unlike `dilate` this DOES
+            widen the field of view, and it leaves the mask alone - the border is real
+            background, kept or blacked by `blackout` like any other non-mask pixel. Pass the
+            same value at every call site: training and scoring disagreeing here does not
+            raise, it just reports a worse number.
         photometric: callable applied to the RAW crop before blackout. It must run
             pre-blackout - contrast blends toward the crop mean, and on a ~95%-black crop
             that mean is near zero, so post-blackout it would behave nothing like the
@@ -158,6 +188,8 @@ def letterbox_crop(
     if tight is None:
         return None
     x0, y0, x1, y1 = tight if box is None else box
+    if pad_frac > 0:
+        x0, y0, x1, y1 = pad_box((x0, y0, x1, y1), pad_frac, *mask.shape)
     h, w = y1 - y0, x1 - x0
     if h <= 0 or w <= 0:
         return None

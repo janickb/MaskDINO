@@ -23,6 +23,7 @@ from cropcls.crop_folder import (
     load_crop,
     patch_bbox,
     save_crop,
+    unclipped_border,
     write_frame_crops,
 )
 from cropcls.crops import (
@@ -59,34 +60,43 @@ def _cfg(**kw) -> CropClsConfig:
     base = {
         "detector_checkpoint": "/fake/det.pth", "detector_config": "/fake/cfg.yaml",
         "crop_size": 64, "photometric": False, "rotations": [0],
-        "crops_per_batch": 2, "margin": 16, "num_workers": 0,
+        "crops_per_batch": 2, "pad_frac": 0.10, "num_workers": 0,
     }
     base.update(kw)
     return CropClsConfig(**base)
 
 
-def _folder(tmp_path, n=5, margin=16):
+def _folder(tmp_path, n=5, pad_frac=0.10):
     """Write n crops the way the extraction script does. Returns (root, truth)."""
     root = tmp_path / "crops"
     root.mkdir()
     truth = []
+    borders = []
     for i in range(n):
         frame, mask = _frame(i), _fragmented(i)
         cls = CLASSES[i % len(CLASSES)]
-        x0, y0, x1, y1 = patch_bbox(mask, margin)
+        box = patch_bbox(mask, pad_frac)
+        x0, y0, x1, y1 = box
+        H, W = mask.shape
+        b = unclipped_border(mask_tight_bbox(mask), box, H, W)
+        if b is not None:
+            borders.append(b)
         (root / cls).mkdir(exist_ok=True)
         save_crop(root / cls / f"f{i:03d}_p000.png", frame[:, y0:y1, x0:x1], mask[y0:y1, x0:x1])
         truth.append((f"f{i:03d}_p000.png", cls, frame, mask))
-    (root / "meta.json").write_text(
-        json.dumps({"margin": margin, "thing_classes": CLASSES})
-    )
+    (root / "meta.json").write_text(json.dumps({
+        "pad_frac": pad_frac,
+        "min_border_px": min(borders) if borders else None,
+        "thing_classes": CLASSES,
+    }))
     return root, truth
 
 
 def _live(frame, mask, cfg, photometric=None):
-    """What `data.py` builds: letterbox_crop with box= the UNDILATED tight box."""
+    """What `data.py` builds: box= the UNDILATED tight box, grown by cfg.pad_frac."""
     out = letterbox_crop(
         frame.float(), mask, cfg.crop_size, box=mask_tight_bbox(mask),
+        pad_frac=cfg.pad_frac,
         photometric=photometric, mask_only=cfg.mask_only, blackout=cfg.blackout,
         dilate=cfg.mask_dilate, close=cfg.mask_close,
     )
@@ -103,18 +113,24 @@ def _live(frame, mask, cfg, photometric=None):
     ("dilate", "close"), [(0, False), (8, False), (16, False), (8, True), (16, True)]
 )
 def test_folder_crop_equals_live_crop(tmp_path, dilate, close, mask_channel, blackout):
-    """Over 5 frames, every mask setting. `close=True` is the case where margin matters.
+    """Over 5 frames, every mask setting, at `pad_frac` equal to the stored one.
 
-    With `close=False` the stored border is provably unused - every mask pixel is inside its
-    own tight box - so only the closing cases make the stored extent load-bearing.
+    The live path clips the padded box to the FRAME and the folder path clips it to the stored
+    patch; identity here is what says those two agree, including on the frame-clipped sides.
+    `close=True` is the case where the stored border is load-bearing beyond the crop region -
+    with `close=False` every mask pixel is inside its own tight box, so the border is unused.
 
     `blackout=False` and `mask_channel=True` are the settings spec_cropcls.md Step 10 ships,
     and the matrix reached neither before: `_cfg` inherits `blackout: True`, so folder-vs-live
     identity had never been exercised at the only blackout setting those arms use.
     """
-    cfg = _cfg(mask_dilate=dilate, mask_close=close, margin=16,
+    # pad_frac is relative, and these masks are 126x42 like the real shafts (aspect ~1.7-1.8
+    # measured), so the SHORT axis sets the border: 0.10 gives 4 px, below the closing radii.
+    # Closing cases therefore run at a fraction that actually covers them.
+    pf = 0.40 if close else 0.10
+    cfg = _cfg(mask_dilate=dilate, mask_close=close, pad_frac=pf,
                blackout=blackout, mask_channel=mask_channel)
-    root, truth = _folder(tmp_path, n=5, margin=16)
+    root, truth = _folder(tmp_path, n=5, pad_frac=pf)
     ds = CropFolder(root, cfg, is_train=False)
     assert len(ds) == 5
     by_name = {p.name: i for i, (p, _) in enumerate(ds.items)}
@@ -139,9 +155,10 @@ def test_dilating_changes_the_crop(tmp_path):
 
 
 def test_closing_differs_from_plain_dilation(tmp_path):
-    root, _ = _folder(tmp_path)
-    d = CropFolder(root, _cfg(mask_dilate=8, mask_close=False), is_train=False)[0][0]
-    c = CropFolder(root, _cfg(mask_dilate=8, mask_close=True), is_train=False)[0][0]
+    root, _ = _folder(tmp_path, pad_frac=0.40)   # closing needs border >= its radius
+    cfg = {"pad_frac": 0.40, "mask_dilate": 8}
+    d = CropFolder(root, _cfg(mask_close=False, **cfg), is_train=False)[0][0]
+    c = CropFolder(root, _cfg(mask_close=True, **cfg), is_train=False)[0][0]
     assert not torch.equal(d, c)
 
 
@@ -193,7 +210,7 @@ def test_write_frame_crops_writes_only_kept_detections(tmp_path):
 
     out = tmp_path / "crops"
     out.mkdir()
-    rows = write_frame_crops(out, "f000", frame, masks, asg, CLASSES, margin=16)
+    rows = write_frame_crops(out, "f000", frame, masks, asg, CLASSES, pad_frac=0.10)
 
     assert len(rows) == 2, "one row per detection, kept or not"
     written = [r for r in rows if r["crop"]]
@@ -210,10 +227,12 @@ def test_written_folder_loads_back(tmp_path):
     asg = assign_gt_classes(mask[None], mask[None], torch.tensor([1]))
     out = tmp_path / "crops"
     out.mkdir()
-    rows = write_frame_crops(out, "f000", frame, mask[None], asg, CLASSES, margin=16)
+    rows = write_frame_crops(out, "f000", frame, mask[None], asg, CLASSES, pad_frac=0.10)
     assert rows[0]["crop"] == f"{CLASSES[1]}/f000_p000.png"
     # the script writes meta.json alongside; CropFolder needs it for the label order
-    (out / "meta.json").write_text(json.dumps({"margin": 16, "thing_classes": CLASSES}))
+    (out / "meta.json").write_text(json.dumps(
+        {"pad_frac": 0.10, "min_border_px": 4, "thing_classes": CLASSES}
+    ))
 
     ds = CropFolder(out, _cfg(), is_train=False)
     assert len(ds) == 1
@@ -299,7 +318,10 @@ def test_one_crop_gets_more_than_one_rotation_across_draws(tmp_path):
     """Rotation is sampled per draw, so no instance is pinned to one orientation."""
     root, _ = _folder(tmp_path, n=1)
     ds = CropFolder(root, _cfg(rotations=[0, 90, 180, 270]), is_train=True, seed=5)
-    seen = {tuple(ds[0][0].flatten()[:32].tolist()) for _ in range(40)}
+    # Fingerprint the WHOLE crop. The first 32 values are the canvas corner, which is padding
+    # for every rotation once pad_frac pushes the silhouette off the edge - so slicing them
+    # made four distinct rotations look identical.
+    seen = {hash(ds[0][0].numpy().tobytes()) for _ in range(40)}
     assert len(seen) >= 2
 
 
@@ -339,7 +361,7 @@ def test_csv_rows_cover_every_detection(tmp_path):
     asg = assign_gt_classes(masks, gt, torch.tensor([0, 1]))
     out = tmp_path / "crops"
     out.mkdir()
-    rows = write_frame_crops(out, "f000", frame, masks, asg, CLASSES, margin=16)
+    rows = write_frame_crops(out, "f000", frame, masks, asg, CLASSES, pad_frac=0.10)
     path = out / "crops.csv"
     with path.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
@@ -349,31 +371,200 @@ def test_csv_rows_cover_every_detection(tmp_path):
         assert len(list(csv.DictReader(fh))) == len(asg) == 3
 
 
-def test_closing_wider_than_the_stored_margin_raises(tmp_path):
-    """The one silent-wrongness case left: closing needs margin >= dilate, measured exactly.
+def test_closing_wider_than_the_stored_border_raises(tmp_path):
+    """Closing needs the stored border to cover its radius, checked against the MEASURED border.
 
-    Plain dilation is exact at margin=0, so only this combination can quietly stop matching
-    the live path - the closing window gets truncated at the patch edge.
+    `pad_frac` is relative and clipped at the frame, so a nominal fraction promises no
+    particular pixel count - which is why the check reads `min_border_px` rather than
+    recomputing it from the fraction.
     """
-    root, _ = _folder(tmp_path, margin=4)
-    with pytest.raises(ValueError, match="margin >= 16"):
-        CropFolder(root, _cfg(mask_dilate=16, mask_close=True), is_train=False)
+    root, _ = _folder(tmp_path, pad_frac=0.02)
+    with pytest.raises(ValueError, match="thinnest in this folder"):
+        CropFolder(root, _cfg(mask_dilate=16, mask_close=True, pad_frac=0.02), is_train=False)
 
 
-def test_closing_within_the_stored_margin_is_allowed(tmp_path):
-    root, _ = _folder(tmp_path, margin=16)
-    ds = CropFolder(root, _cfg(mask_dilate=16, mask_close=True), is_train=False)
+def test_closing_within_the_stored_border_is_allowed(tmp_path):
+    root, _ = _folder(tmp_path, pad_frac=0.50)
+    ds = CropFolder(root, _cfg(mask_dilate=16, mask_close=True, pad_frac=0.50), is_train=False)
     assert len(ds) == 5
 
 
-def test_plain_dilation_needs_no_margin_at_all(tmp_path):
-    """margin=0 must still serve the whole dilation sweep, or margin=0 forecloses +4.2."""
-    root, truth = _folder(tmp_path, margin=0)
-    cfg = _cfg(mask_dilate=16, mask_close=False, margin=0)
+def test_plain_dilation_needs_no_border_at_all(tmp_path):
+    """pad_frac=0 must still serve the whole dilation sweep, or it forecloses +4.2."""
+    root, truth = _folder(tmp_path, pad_frac=0.0)
+    cfg = _cfg(mask_dilate=16, mask_close=False, pad_frac=0.0)
     ds = CropFolder(root, cfg, is_train=False)
     by_name = {p.name: i for i, (p, _) in enumerate(ds.items)}
     for name, _cls, frame, mask in truth:
         assert torch.equal(ds[by_name[name]][0], _live(frame, mask, cfg)), name
 
 
+# --- the stored patch is a ceiling --------------------------------------------
 
+
+def test_training_below_the_stored_pad_frac_still_matches_live(tmp_path):
+    """One folder serves every pad_frac at or below the stored one, bit for bit.
+
+    This is what makes the tight control free: extract once at 0.20, then train 0.0/0.10/0.20
+    off the same PNGs with no re-extraction and no frame-to-frame mismatch against the control.
+    """
+    root, truth = _folder(tmp_path, pad_frac=0.20)
+    for pf in (0.0, 0.05, 0.10, 0.20):
+        cfg = _cfg(pad_frac=pf)
+        ds = CropFolder(root, cfg, is_train=False)
+        by_name = {p.name: i for i, (p, _) in enumerate(ds.items)}
+        for name, _cls, frame, mask in truth:
+            assert torch.equal(ds[by_name[name]][0], _live(frame, mask, cfg)), f"{name} pf={pf}"
+
+
+def test_training_above_the_stored_pad_frac_raises(tmp_path):
+    """The border pixels are not in the PNG, so cropping short would be silent."""
+    root, _ = _folder(tmp_path, pad_frac=0.10)
+    with pytest.raises(ValueError, match="cannot be invented"):
+        CropFolder(root, _cfg(pad_frac=0.20), is_train=False)
+
+
+def test_a_folder_predating_pad_frac_raises_rather_than_assuming_zero(tmp_path):
+    """`crops/train` records `margin: 0` and no pad_frac; its PNGs are tight.
+
+    Defaulting to 0 would train on tight crops under a padded config, which does not raise and
+    only reports a worse number.
+    """
+    root, _ = _folder(tmp_path, pad_frac=0.10)
+    meta = json.loads((root / "meta.json").read_text())
+    del meta["pad_frac"]
+    meta["margin"] = 0
+    (root / "meta.json").write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="predates the crop-padding change"):
+        CropFolder(root, _cfg(pad_frac=0.10), is_train=False)
+
+
+def test_pad_frac_actually_widens_the_field_of_view(tmp_path):
+    """The whole point of the change: a padded crop is not the tight crop.
+
+    Guards the failure mode that cost the first attempt - growing the stored PNG while the
+    loader re-tightened from alpha, so the model saw byte-identical input.
+    """
+    root, _ = _folder(tmp_path, pad_frac=0.20)
+    tight = CropFolder(root, _cfg(pad_frac=0.0), is_train=False)
+    padded = CropFolder(root, _cfg(pad_frac=0.20), is_train=False)
+    assert not torch.equal(tight[0][0], padded[0][0])
+
+
+def test_pad_frac_keeps_the_background_out_of_the_mask(tmp_path):
+    """Padding widens the view and leaves the MASK alone - unlike dilate, which grows the mask.
+
+    Under blackout the border is therefore black, and the two knobs stay separable.
+    """
+    root, _ = _folder(tmp_path, pad_frac=0.20)
+    cfg = _cfg(pad_frac=0.20, blackout=True, mask_channel=True)
+    x, _label = CropFolder(root, cfg, is_train=False)[0]
+    occupancy = x[3]
+    assert occupancy.sum() > 0
+    # every RGB pixel outside the mask is the pad value, normalized
+    rgb, m = x[:3], occupancy.bool()
+    assert torch.allclose(rgb[:, ~m].std(dim=1), torch.zeros(3), atol=1e-5)
+
+
+def test_closing_at_exactly_the_stored_border_raises(tmp_path):
+    """The off-by-one. `border == dilate` was safe while the crop was the tight box.
+
+    Then the dilated mask reached the patch edge but the `close_mask` leak landed in the border,
+    outside the crop. `pad_frac` extends the crop region to the patch edge, so the leak is now
+    inside it: measured 1053 differing mask pixels on a 204x160 instance at pad_frac=0.10, which
+    stores exactly a 16 px border. A `>` guard let that through.
+    """
+    root = tmp_path / "crops"
+    (root / CLASSES[0]).mkdir(parents=True)
+    H = W = 512
+    frame = (torch.rand(3, H, W) * 255).to(torch.uint8)
+    mask = torch.zeros(H, W, dtype=torch.bool)
+    mask[150:310, 150:354] = True          # 204x160 -> round(160*0.10) = 16 px short-axis border
+    mask[200:240, 200:240] = False         # a hole, so closing has something to do
+    box = patch_bbox(mask, 0.10)
+    border = unclipped_border(mask_tight_bbox(mask), box, H, W)
+    assert border == 16, border
+    x0, y0, x1, y1 = box
+    save_crop(root / CLASSES[0] / "f000_p000.png", frame[:, y0:y1, x0:x1], mask[y0:y1, x0:x1])
+    (root / "meta.json").write_text(json.dumps(
+        {"pad_frac": 0.10, "min_border_px": border, "thing_classes": CLASSES}
+    ))
+    cfg = {"pad_frac": 0.10, "mask_close": True}
+    with pytest.raises(ValueError, match="thinnest in this folder"):
+        CropFolder(root, _cfg(mask_dilate=16, **cfg), is_train=False)
+    # one less still matches the live path exactly, so the guard must not over-reach
+    ds = CropFolder(root, _cfg(mask_dilate=15, **cfg), is_train=False)
+    live = letterbox_crop(
+        frame.float(), mask, ds.cfg.crop_size, box=mask_tight_bbox(mask), pad_frac=0.10,
+        dilate=15, close=True, blackout=ds.cfg.blackout,
+    )
+    expected = to_model_input(live, ds.cfg.pixel_mean, ds.cfg.pixel_std,
+                              mask_channel=ds.cfg.mask_channel)
+    assert torch.equal(ds[0][0], expected)
+
+
+def test_identity_holds_for_an_instance_clipped_at_the_frame_edge(tmp_path):
+    """The padded box is clipped to the FRAME live and to the STORED PATCH in the folder.
+
+    When the instance sits on the image border those two clips are the same cut, which is the
+    only reason the asymmetric-border case stays bit-identical. Every other fixture here keeps
+    its mask well inside the frame, so this branch of `pad_box` was never executed.
+    """
+    root = tmp_path / "crops"
+    (root / CLASSES[0]).mkdir(parents=True)
+    H = W = 256
+    frame = (torch.rand(3, H, W) * 255).to(torch.uint8)
+    mask = torch.zeros(H, W, dtype=torch.bool)
+    mask[0:60, 0:90] = True                # flush against the top-left corner
+    box = patch_bbox(mask, 0.20)
+    assert box[0] == 0 and box[1] == 0, box     # clipped on two sides
+    assert unclipped_border(mask_tight_bbox(mask), box, H, W) is not None
+    x0, y0, x1, y1 = box
+    save_crop(root / CLASSES[0] / "f000_p000.png", frame[:, y0:y1, x0:x1], mask[y0:y1, x0:x1])
+    (root / "meta.json").write_text(json.dumps(
+        {"pad_frac": 0.20, "min_border_px": 12, "thing_classes": CLASSES}
+    ))
+    for pf in (0.0, 0.10, 0.20):
+        cfg = _cfg(pad_frac=pf)
+        ds = CropFolder(root, cfg, is_train=False)
+        assert torch.equal(ds[0][0], _live(frame, mask, cfg)), f"pad_frac={pf}"
+
+
+def test_a_retired_margin_key_loads_as_pad_frac_zero(tmp_path):
+    """All 53 `runs/*/config.json` carry `margin`, and two tools re-load them to diagnose a run.
+
+    Dropping the field outright would break every one of them; inheriting the new 0.10 default
+    would re-diagnose them with a field of view they never trained on. Neither fails loudly, so
+    pin both halves.
+    """
+    import yaml
+
+    from cropcls.config import load_config
+    # load_config validates, so these have to be real files
+    det, dcfg = tmp_path / "det.pth", tmp_path / "det.yaml"
+    det.touch(); dcfg.touch()
+    path = tmp_path / "config.json"
+    path.write_text(yaml.safe_dump({
+        "detector_checkpoint": str(det), "detector_config": str(dcfg),
+        "margin": 16, "crop_size": 64,
+    }))
+    with pytest.warns(UserWarning, match="retired config key"):
+        cfg = load_config(path)
+    assert cfg.pad_frac == 0.0
+    assert not hasattr(cfg, "margin")
+
+    # an explicit pad_frac alongside a stale margin is respected, not overwritten
+    path.write_text(yaml.safe_dump({
+        "detector_checkpoint": str(det), "detector_config": str(dcfg),
+        "margin": 16, "pad_frac": 0.10, "crop_size": 64,
+    }))
+    with pytest.warns(UserWarning):
+        assert load_config(path).pad_frac == 0.10
+
+    # a genuine typo must still raise - that is what the unknown-key check is for
+    path.write_text(yaml.safe_dump({
+        "detector_checkpoint": str(det), "detector_config": str(dcfg),
+        "pad_frakk": 0.10,
+    }))
+    with pytest.raises(ValueError, match="unknown config keys"):
+        load_config(path)

@@ -223,11 +223,12 @@ def _fragmented_mask():
 def test_a_passed_box_overrides_the_dilated_box():
     """A passed `box` wins over the box letterbox_crop would compute from the dilated mask.
 
-    Every real caller passes the UNDILATED tight box (`data.py`, `crop_folder.py`), so
-    dilation grows the mask inside that box and never widens the field of view. The static
-    crop folder reproduces the live path only because of this. If someone "fixes" dilation to
-    also grow the crop region, the folder silently stops matching the live pipeline and only
-    classaware_f1 moves - so pin it here.
+    Every real caller passes the UNDILATED tight box, so dilation grows the mask inside the
+    crop region and never widens it. `pad_frac` is the knob that widens it, and it is applied
+    to the passed box afterwards, so the two stay separable: dilation repairs the mask, padding
+    changes the field of view. The static crop folder reproduces the live path only because of
+    this. If someone "fixes" dilation to also grow the crop region, the folder silently stops
+    matching the live pipeline and only classaware_f1 moves - so pin it here.
     """
     img = _frame(256, 256)
     mask = _fragmented_mask()

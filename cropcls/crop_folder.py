@@ -24,7 +24,7 @@ from PIL import Image
 
 from .augment import PhotometricJitter
 from .config import CropClsConfig
-from .crops import letterbox_crop, mask_tight_bbox, to_model_input
+from .crops import letterbox_crop, mask_tight_bbox, pad_box, to_model_input
 
 __all__ = [
     "CropFolder",
@@ -32,18 +32,44 @@ __all__ = [
     "load_crop",
     "patch_bbox",
     "save_crop",
+    "unclipped_border",
     "write_frame_crops",
 ]
 
 
-def patch_bbox(mask: torch.Tensor, margin: int) -> tuple[int, int, int, int] | None:
-    """The mask's tight box grown by `margin`, clipped to the frame."""
+def patch_bbox(mask: torch.Tensor, pad_frac: float) -> tuple[int, int, int, int] | None:
+    """The mask's tight box grown by `pad_frac` per axis, clipped to the frame.
+
+    What gets STORED. The loader crops to its own `cfg.pad_frac` within this, so extracting at
+    a larger fraction than you intend to train at costs disk and buys a sweep.
+    """
     tight = mask_tight_bbox(mask)
     if tight is None:
         return None
     H, W = mask.shape
-    x0, y0, x1, y1 = tight
-    return (max(0, x0 - margin), max(0, y0 - margin), min(W, x1 + margin), min(H, y1 + margin))
+    return pad_box(tight, pad_frac, H, W)
+
+
+def unclipped_border(
+    tight: tuple[int, int, int, int], patch: tuple[int, int, int, int], H: int, W: int
+) -> int | None:
+    """Smallest stored border, over the sides that are NOT at the frame edge.
+
+    `mask_close` leaks foreground inward from the array edge by up to its radius, so it needs
+    real border to hide the leak in. A side sitting on the frame edge needs none: there the
+    patch edge IS the frame edge, which is the convention `close_mask` already applies on a
+    full frame. Returns None when every side is frame-clipped, i.e. nothing to promise.
+    """
+    b = []
+    if patch[0] > 0:
+        b.append(tight[0] - patch[0])
+    if patch[1] > 0:
+        b.append(tight[1] - patch[1])
+    if patch[2] < W:
+        b.append(patch[2] - tight[2])
+    if patch[3] < H:
+        b.append(patch[3] - tight[3])
+    return min(b) if b else None
 
 
 def save_crop(path: Path, rgb: torch.Tensor, mask: torch.Tensor) -> None:
@@ -69,7 +95,7 @@ def write_frame_crops(
     masks: torch.Tensor,
     asg,
     class_names: list[str],
-    margin: int,
+    pad_frac: float,
 ) -> list[dict]:
     """Write one frame's kept crops into `out/<class>/`. Returns a row per DETECTION.
 
@@ -83,15 +109,18 @@ def write_frame_crops(
             "frame": stem, "pred_index": k, "verdict": asg.verdict[k],
             "best_iou": round(float(asg.best_iou[k]), 4),
             "runner_up_iou": round(float(asg.runner_up_iou[k]), 4),
-            "class_name": "", "crop": "",
+            "class_name": "", "crop": "", "border_px": "",
         }
         if bool(asg.keep[k]):
-            box = patch_bbox(masks[k], margin)
+            box = patch_bbox(masks[k], pad_frac)
             if box is None:
                 # A kept detection can still have an empty mask. It gets a row, not silence.
                 row["verdict"] = "dropped_empty_box"
             else:
                 x0, y0, x1, y1 = box
+                H, W = masks[k].shape
+                bp = unclipped_border(mask_tight_bbox(masks[k]), box, H, W)
+                row["border_px"] = "" if bp is None else bp
                 cls = class_names[int(asg.labels[k])]
                 (out / cls).mkdir(parents=True, exist_ok=True)
                 rel = f"{cls}/{stem}_p{k:03d}.png"
@@ -149,33 +178,73 @@ class CropFolder(torch.utils.data.Dataset):
         ]
         if not self.items:
             raise FileNotFoundError(f"{self.root} has class folders but no crops")
-        self._check_margin()
+        self._check_border()
         self.photometric = PhotometricJitter() if (is_train and cfg.photometric) else None
         self.rotations = list(cfg.rotations) if is_train else [0]
         # Own generator: the global RNG is also seeded for model init, so drawing rotations
         # from it would couple augmentation to unrelated RNG consumption.
         self.g = torch.Generator().manual_seed(seed + 7919)
 
-    def _check_margin(self) -> None:
-        """Closing is the only op that needs the stored border, and it needs `margin >= dilate`.
+    def _check_border(self) -> None:
+        """The stored patch is a ceiling: it bounds `pad_frac`, and it bounds the close window.
 
-        Measured: plain dilation is exact at `margin=0`, because every mask pixel is inside its
-        own tight box and max-pool pads with -inf. Closing is different - `close_mask` is
-        `~dilate_mask(~d, r)`, and the pad makes the window edge read as foreground during the
-        erode, so foreground leaks inward by up to `radius`. In the full-frame path the window
-        is `tight +- 2d` so the leak stops outside the box; here the window is the stored patch,
-        so it is invisible only when `margin >= dilate`. Silent otherwise, hence the raise.
+        Two different things need the stored border, so two checks.
+
+        `pad_frac` is the crop region, and the loader cannot invent pixels the PNG does not
+        hold, so training above the extracted fraction is impossible rather than merely
+        inadvisable.
+
+        `mask_close` is subtler: `close_mask` is `~dilate_mask(~d, r)` and `max_pool2d` pads
+        with -inf, so the array edge reads as FOREGROUND during the erode and foreground leaks
+        inward by up to `radius`. On a full frame `letterbox_crop` widens its own window to
+        `tight +- 2d` so the leak lands outside the box; here the array edge is the stored patch,
+        so the leak is invisible only while the border covers it. Checked against the MEASURED
+        `min_border_px` rather than a configured number: the patch is clipped at the frame, so a
+        nominal fraction is not a promise. Plain dilation needs no border at all - every mask
+        pixel is inside its own tight box - which `test_plain_dilation_needs_no_margin_at_all`
+        pins.
         """
         cfg = self.cfg
+        if "pad_frac" not in self.meta:
+            raise ValueError(
+                f"{self.root}/meta.json has no `pad_frac`, so it predates the crop-padding "
+                "change and its PNGs are the mask's TIGHT box. Defaulting to 0 would train on "
+                f"tight crops under a config asking for pad_frac={cfg.pad_frac}, which does not "
+                "raise and only reports a worse number. Re-extract with tools/extract_crops.py."
+            )
+        stored = float(self.meta["pad_frac"])
+        if cfg.pad_frac > stored + 1e-9:
+            raise ValueError(
+                f"pad_frac={cfg.pad_frac} but these crops were extracted at pad_frac={stored}. "
+                "The border pixels are not in the PNGs and cannot be invented. Re-extract at "
+                f"pad_frac >= {cfg.pad_frac}, or train at <= {stored}."
+            )
         if not (cfg.mask_close and cfg.mask_dilate > 0):
             return
-        margin = self.meta["margin"]
-        if cfg.mask_dilate > margin:
+        border = self.meta.get("min_border_px")
+        if border is None:
             raise ValueError(
-                f"mask_close with mask_dilate={cfg.mask_dilate} needs margin >= {cfg.mask_dilate} "
-                f"but these crops were stored with margin={margin}. The closing window would be "
-                "truncated at the patch edge and the crop would quietly stop matching the live "
-                "path. Re-extract with a larger margin."
+                f"mask_close with mask_dilate={cfg.mask_dilate} needs to know the stored border, "
+                f"but {self.root}/meta.json has no `min_border_px`. Re-extract."
+            )
+        # `>=`, not `>`. While the crop was the tight box, a border equal to the radius was
+        # enough: the dilated mask reached the patch edge but the close_mask leak landed in the
+        # border, outside the crop. pad_frac extends the crop region to the patch edge, so that
+        # leak is now INSIDE the crop. Measured: a 204x160 mask at pad_frac=0.10 stores a 16 px
+        # border, and at mask_dilate=16 the folder crop differs from the live crop by 1053 of
+        # 96x96 mask pixels while `>` let it through. Exact threshold is border >= dilate + 1.
+        if cfg.mask_dilate >= border:
+            raise ValueError(
+                f"mask_close with mask_dilate={cfg.mask_dilate} needs every stored border > "
+                f"{cfg.mask_dilate} px, but the thinnest in this folder is {border} px. "
+                f"pad_frac={stored} is relative, so this is the SINGLE thinnest detection, not "
+                "the typical one - a 22x3 px sliver gets a 0 px border at 0.10 and gates the "
+                "whole folder. The closing window would be truncated at the patch edge and that "
+                "crop would quietly stop matching the live path, so this raises rather than "
+                "differing. Fixes, in order of cost: drop mask_close (it measured +0.4 and -0.2 "
+                "in the sweep, cropcls-results.md section 4), re-extract at a pad_frac large "
+                "enough for the thinnest detection, or check crops.csv `border_px` and whether "
+                "a 3 px-tall detection should be passing the assignment rule at all."
             )
 
     def __len__(self) -> int:
@@ -188,11 +257,13 @@ class CropFolder(torch.utils.data.Dataset):
         tight = mask_tight_bbox(mask)
         if tight is None:
             raise ValueError(f"{path} has an empty mask; re-extract")
-        # Same call as CropPipeline.build_batch, including box= the UNDILATED tight box. A
-        # passed box overrides letterbox_crop's dilated one, so dilation grows the mask
-        # inside this box but never widens it. The live path does that; match it.
+        # Same call as CropPipeline.build_batch, including box= the UNDILATED tight box and
+        # the same pad_frac. A passed box overrides letterbox_crop's dilated one, so dilation
+        # grows the mask inside the region but never widens it; only pad_frac widens it. Here
+        # `mask` IS the stored patch, so pad_box's clip lands on the patch edge - which is why
+        # cfg.pad_frac above the stored one has to raise rather than silently crop short.
         out = letterbox_crop(
-            rgb.float(), mask, cfg.crop_size, box=tight,
+            rgb.float(), mask, cfg.crop_size, box=tight, pad_frac=cfg.pad_frac,
             photometric=self.photometric, mask_only=cfg.mask_only, blackout=cfg.blackout,
             dilate=cfg.mask_dilate, close=cfg.mask_close,
         )

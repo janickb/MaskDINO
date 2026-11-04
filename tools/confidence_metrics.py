@@ -54,17 +54,25 @@ def parse_args():
     ap.add_argument("--weights", default=None, help="default <run>/model_final.pth")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--frames", type=int, default=None, help="cap frames (debug)")
+    ap.add_argument("--frames-per-forward", type=int, default=None,
+                    help="frames per detector forward; default cfg.ims_per_batch. Lower it "
+                         "when the card is shared - the deformable-attention fallback asks "
+                         "for ~1.6 GB per frame at crop 448.")
+    ap.add_argument("--val-stride", type=int, default=None,
+                    help="override cfg.val_stride; 1 = every val frame. The run's "
+                         "own value is the 8-class baseline protocol, so metrics "
+                         "compared against it must keep it.")
     ap.add_argument("--out", default=None, help="default <run>/confidence")
     ap.add_argument("--bins", type=int, default=15, help="ECE bins")
     return ap.parse_args()
 
 
 @torch.no_grad()
-def collect(model, pipe, device, max_frames=None):
+def collect(model, pipe, device, max_frames=None, step=None):
     """Classify every detector prediction, assigned or not. One row per prediction."""
     n = len(pipe) if max_frames is None else min(max_frames, len(pipe))
     cfg = pipe.cfg
-    step = cfg.ims_per_batch
+    step = step or cfg.ims_per_batch
     rows = []
 
     for start in range(0, n, step):
@@ -88,13 +96,14 @@ def collect(model, pipe, device, max_frames=None):
             )
 
             image = m["image"].float()
-            crops, keep = [], []
+            crops, keep, geom = [], [], []
             for k in range(len(det)):
                 tight = mask_tight_bbox(pred_masks[k])
                 if tight is None:
                     continue
+                x0, y0, x1, y1 = tight
                 out = letterbox_crop(
-                    image, pred_masks[k], cfg.crop_size, box=tight,
+                    image, pred_masks[k], cfg.crop_size, box=tight, pad_frac=cfg.pad_frac,
                     mask_only=cfg.mask_only, blackout=cfg.blackout,
                     dilate=cfg.mask_dilate, close=cfg.mask_close,
                 )
@@ -103,6 +112,13 @@ def collect(model, pipe, device, max_frames=None):
                 crops.append(
                     to_model_input(out, cfg.pixel_mean, cfg.pixel_std, 0, cfg.mask_channel)
                 )
+                # Pre-letterbox geometry, read off the TIGHT box, not the padded one: the
+                # letterbox throws the scale away (cropcls-scale-feature-notes.md section 1),
+                # and reading it after pad_frac would inflate it by (1 + 2*pad_frac). Appended
+                # here rather than above the `out is None` guard so it stays index-aligned with
+                # `keep` - a dropped crop would otherwise shift every later row's scale columns
+                # onto the wrong detection.
+                geom.append((int(y1 - y0), int(x1 - x0), int(pred_masks[k].sum())))
                 keep.append(k)
             if not crops:
                 continue
@@ -118,6 +134,7 @@ def collect(model, pipe, device, max_frames=None):
                 p = prob[j]
                 pred = int(top2.indices[j, 0])
                 label = int(a.labels[k])
+                g_h, g_w, g_area = geom[j]
                 rows.append({
                     "frame": Path(str(m.get("file_name", ""))).stem,
                     "pred_index": k,
@@ -135,6 +152,10 @@ def collect(model, pipe, device, max_frames=None):
                     "best_iou": float(a.best_iou[k]),
                     "runner_up_iou": float(a.runner_up_iou[k]),
                     "det_score": float(det.scores[k]),
+                    "mask_h": g_h,
+                    "mask_w": g_w,
+                    "mask_long": max(g_h, g_w),
+                    "mask_area": g_area,
                 })
     return rows
 
@@ -279,7 +300,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device)
 
-    n_frames = apply_val_stride(cfg.val_dataset, cfg.val_stride)
+    n_frames = apply_val_stride(cfg.val_dataset, (cfg.val_stride if args.val_stride is None else args.val_stride))
     n_gt = apply_truncated_filter(cfg.val_dataset, cfg.exclude_truncated)
     print(f"val={cfg.val_dataset} stride={cfg.val_stride} -> {n_frames} frames, {n_gt} GT")
 
@@ -295,7 +316,8 @@ def main():
           f"blackout={cfg.blackout}")
     print(f"weights={cfg.weights} (iter {state.get('iteration')})")
 
-    rows = collect(model, pipe, device, max_frames=args.frames)
+    rows = collect(model, pipe, device, max_frames=args.frames,
+                   step=args.frames_per_forward)
     matched = [r for r in rows if r["correct"] >= 0]
     conf = [r["msp"] for r in matched]
     corr = [r["correct"] for r in matched]
