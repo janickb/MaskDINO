@@ -32,8 +32,20 @@
 # over the PREDICTION's area >= IOU_THRESH, pycocotools' crowd rule - is ignored: not a
 # false positive, not counted in num_pred (reported as num_ignored).
 #
+# THRESHOLD SWEEP (SWEEP_THRESHOLDS non-empty): the classagnostic matching is re-run at
+# every listed score threshold - the IoU matrix is computed once per image, over the
+# predictions above the lowest threshold - and the best one is reported under sweep/*:
+# f1_max, the threshold it occurs at, and precision / recall / SQ (mean matched IoU) /
+# false positives / duplicates per image there, plus pq_max (max over thresholds of
+# SQ x F1). A duplicate is a false positive overlapping a GT at >= IOU_THRESH: a second
+# mask on an instance another prediction already took. Unlike the fixed-SCORE_THRESH
+# numbers this does not move when a change only shifts score calibration. With more
+# than one class, the classaware F1 is swept too (sweep/classaware_*): its best
+# threshold can differ, since a low-scoring match with the wrong label helps the
+# classagnostic F1 but costs the classaware one.
+#
 # Config: cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.{ENABLED,SCORE_THRESH,IOU_THRESH,
-#         BOX_PREFILTER}  (see maskdino/config.py)
+#         BOX_PREFILTER,SWEEP_THRESHOLDS}  (see maskdino/config.py)
 #
 # NOTE: this assumes GT masks and predicted masks describe the SAME thing (both modal =
 # visible pixels only, or both amodal). The validation GT is modal
@@ -64,6 +76,7 @@ __all__ = [
     "crowd_overlap",
     "hungarian_match",
     "mask_iou_matrix",
+    "match_counts",
 ]
 
 
@@ -168,6 +181,36 @@ def hungarian_match(iou, iou_thresh):
     return row_ind.astype(np.int64), col_ind.astype(np.int64), matched_iou
 
 
+def match_counts(iou, on_crowd, iou_thresh, pred_classes=None, gt_classes=None):
+    """Classagnostic counts for one image at one operating point -> (tp, fp, fn,
+    sum_iou, dup, mis), by the same rules as HungarianInstanceEvaluator.process:
+    hungarian_match, accept pairs with IoU >= iou_thresh, then leave unmatched
+    predictions lying on an ignore region (on_crowd, (N,) bool) out of the count.
+
+    dup counts the false positives that overlap some GT at >= iou_thresh. The matching
+    maximizes the number of accepted pairs, so that GT is always taken by another
+    prediction: dup is a second mask on an already-found instance.
+
+    mis counts the accepted pairs whose labels differ (pred_classes (N,) vs gt_classes
+    (M,)); 0 when either is None, as in single-class mode. The matching itself never
+    looks at labels.
+    """
+    n, m = iou.shape
+    row_ind, col_ind, matched_iou = hungarian_match(iou, iou_thresh)
+    accepted = matched_iou >= iou_thresh
+    matched = np.zeros((n,), dtype=bool)
+    matched[row_ind[accepted]] = True
+    false_pos = ~matched & ~on_crowd
+    dup = 0
+    if n and m:
+        dup = int((false_pos & (iou.cpu().numpy().max(axis=1) >= iou_thresh)).sum())
+    tp = int(accepted.sum())
+    mis = 0
+    if pred_classes is not None and gt_classes is not None and tp:
+        mis = int((pred_classes[row_ind[accepted]] != gt_classes[col_ind[accepted]]).sum())
+    return tp, int(false_pos.sum()), m - tp, float(matched_iou[accepted].sum()), dup, mis
+
+
 class HungarianInstanceEvaluator(DatasetEvaluator):
     """See module docstring. Returns metrics under the ``"instance_matching"`` namespace,
     which EvalHook flattens to TensorBoard tags ``instance_matching/<metric>`` during
@@ -184,6 +227,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         he = cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL
         self._score_thresh = float(he.SCORE_THRESH)
         self._iou_thresh = float(he.IOU_THRESH)
+        self._sweep_thresholds = tuple(sorted(float(t) for t in he.SWEEP_THRESHOLDS))
         # Always the training-time GT filter, never a separate knob: recall must be
         # measured against the same GT distribution the model was trained on.
         self._min_visibility = float(cfg.INPUT.MIN_VISIBILITY)
@@ -280,10 +324,13 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             )
 
             instances = out["instances"].to(self._cpu_device)
-            keep = instances.scores >= self._score_thresh
-            instances = instances[keep]
+            # Down to the lowest sweep threshold, so the IoU matrix and crowd overlaps are
+            # computed once and every operating point below is a row subset of them.
+            floor = min((self._score_thresh, *self._sweep_thresholds))
+            instances = instances[instances.scores >= floor]
             pred_masks = instances.pred_masks.bool()
-            pred_classes = instances.pred_classes.numpy().astype(np.int64)
+            scores = instances.scores.numpy()
+            pred_classes_all = instances.pred_classes.numpy().astype(np.int64)
 
             if tuple(pred_masks.shape[-2:]) != (gt_h, gt_w):
                 raise RuntimeError(
@@ -292,10 +339,32 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                     f"mismatch, refusing to evaluate"
                 )
 
-            n, m = pred_masks.shape[0], gt_masks.shape[0]
-            iou = mask_iou_matrix(
+            iou_all = mask_iou_matrix(
                 pred_masks, gt_masks, box_prefilter=self._box_prefilter
             )
+            # A prediction's overlap with an ignore region does not depend on the matching.
+            on_crowd_all = (
+                crowd_overlap(pred_masks, crowd_masks) >= self._iou_thresh
+            ).numpy()
+
+            sweep = [
+                match_counts(
+                    iou_all[torch.from_numpy(scores >= t)],
+                    on_crowd_all[scores >= t],
+                    self._iou_thresh,
+                    # labels only count with more than one class (see __init__)
+                    pred_classes_all[scores >= t] if self._check_classes else None,
+                    gt_classes if self._check_classes else None,
+                )
+                for t in self._sweep_thresholds
+            ]
+
+            keep = scores >= self._score_thresh
+            iou = iou_all[torch.from_numpy(keep)]
+            on_crowd = on_crowd_all[keep]
+            pred_classes = pred_classes_all[keep]
+
+            n, m = int(keep.sum()), gt_masks.shape[0]
             row_ind, col_ind, matched_iou = hungarian_match(iou, self._iou_thresh)
 
             accepted = matched_iou >= self._iou_thresh
@@ -308,12 +377,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             # unmatched, those lying on an iscrowd region are dropped from the count.
             matched_pred_set = set(acc_pred.tolist())
             unmatched = [i for i in range(n) if i not in matched_pred_set]
-            ignored = set()
-            if unmatched and crowd_masks.shape[0]:
-                overlap = crowd_overlap(pred_masks[unmatched], crowd_masks)
-                ignored = {
-                    i for i, o in zip(unmatched, overlap.tolist()) if o >= self._iou_thresh
-                }
+            ignored = {i for i in unmatched if on_crowd[i]}
             num_ignored = len(ignored)
             num_pred = n - num_ignored
 
@@ -364,6 +428,14 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
                     ],
                 }
             )
+            if sweep:
+                # one list per count, indexed like self._sweep_thresholds
+                for key, values in zip(
+                    ("sweep_tp", "sweep_fp", "sweep_fn", "sweep_sum_iou", "sweep_dup",
+                     "sweep_mis"),
+                    zip(*sweep),
+                ):
+                    self._records[-1][key] = list(values)
 
     # ------------------------------------------------------------------ evaluate
 
@@ -444,8 +516,10 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             if self._check_classes:
                 misclassified_per_class[name] = float(mis_pc.get(cid, 0))
 
+        sweep = self._sweep_table(records) if self._sweep_thresholds else None
+
         if self._output_dir and comm.is_main_process():
-            self._write_artifacts(records, confusion, false_neg_pc, false_pos_pc)
+            self._write_artifacts(records, confusion, false_neg_pc, false_pos_pc, sweep)
 
         res = {
             # precision / recall / f1 -- classagnostic (localization)
@@ -495,6 +569,10 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         for group, values in per_class_groups.items():
             for name, val in values.items():
                 res[f"{group}/{name}"] = float(val)
+        if sweep is not None:
+            res.update(
+                self._sweep_summary(sweep, n_images, classaware=self._check_classes)
+            )
 
         self._logger.info(
             "[HungarianInstanceEvaluator] images=%d gt=%d pred=%d matched=%d correct=%d "
@@ -514,7 +592,85 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
             classagnostic_f1,
             res["mean_iou_matched"],
         )
+        if sweep is not None:
+            self._logger.info(
+                "[HungarianInstanceEvaluator] threshold sweep: f1_max=%.4f at score>=%.2f "
+                "(precision=%.4f recall=%.4f sq=%.4f fp/img=%.3f dup/img=%.3f) | "
+                "pq_max=%.4f",
+                res["sweep/f1_max"],
+                res["sweep/thresh_at_f1_max"],
+                res["sweep/precision"],
+                res["sweep/recall"],
+                res["sweep/sq"],
+                res["sweep/fp_per_image"],
+                res["sweep/dup_per_image"],
+                res["sweep/pq_max"],
+            )
+            if self._check_classes:
+                self._logger.info(
+                    "[HungarianInstanceEvaluator] threshold sweep, classaware: "
+                    "f1_max=%.4f at score>=%.2f (precision=%.4f recall=%.4f)",
+                    res["sweep/classaware_f1_max"],
+                    res["sweep/classaware_thresh_at_f1_max"],
+                    res["sweep/classaware_precision"],
+                    res["sweep/classaware_recall"],
+                )
         return OrderedDict({"instance_matching": res})
+
+    # ------------------------------------------------------------------ threshold sweep
+
+    def _sweep_table(self, records):
+        """Per-threshold totals over the eval set plus the derived curves -> dict of
+        (T,) float arrays, indexed like self._sweep_thresholds."""
+        t = {
+            key: np.sum([r[f"sweep_{key}"] for r in records], axis=0).astype(np.float64)
+            for key in ("tp", "fp", "fn", "sum_iou", "dup", "mis")
+        }
+        tp, fp, fn, mis = t["tp"], t["fp"], t["fn"], t["mis"]
+        t["thresh"] = np.asarray(self._sweep_thresholds, dtype=np.float64)
+        t["precision"] = tp / np.maximum(tp + fp, 1)
+        t["recall"] = tp / np.maximum(tp + fn, 1)
+        t["f1"] = 2 * tp / np.maximum(2 * tp + fp + fn, 1)  # = TP / (TP + FP/2 + FN/2)
+        t["sq"] = t["sum_iou"] / np.maximum(tp, 1)
+        t["pq"] = t["sq"] * t["f1"]
+        # classaware: a misclassified match is both a false positive and a false
+        # negative, i.e. TP - mis, FP + mis, FN + mis. The denominators then reduce to
+        # the classagnostic ones, so classaware_f1 = f1 * (1 - mis / tp).
+        t["classaware_precision"] = (tp - mis) / np.maximum(tp + fp, 1)
+        t["classaware_recall"] = (tp - mis) / np.maximum(tp + fn, 1)
+        t["classaware_f1"] = 2 * (tp - mis) / np.maximum(2 * tp + fp + fn, 1)
+        return t
+
+    @staticmethod
+    def _sweep_summary(t, n_images, classaware=False):
+        """The best-F1 operating point of a _sweep_table, as flat sweep/* metrics.
+        Ties go to the lowest threshold. classaware adds the best classaware-F1
+        operating point, which can sit at a different threshold."""
+        best = int(np.argmax(t["f1"]))
+        n = max(n_images, 1)
+        res = {
+            "sweep/f1_max": float(t["f1"][best]),
+            "sweep/thresh_at_f1_max": float(t["thresh"][best]),
+            "sweep/precision": float(t["precision"][best]),
+            "sweep/recall": float(t["recall"][best]),
+            "sweep/sq": float(t["sq"][best]),
+            "sweep/fp_per_image": float(t["fp"][best]) / n,
+            "sweep/dup_per_image": float(t["dup"][best]) / n,
+            "sweep/pq_max": float(t["pq"].max()),
+        }
+        if classaware:
+            best_ca = int(np.argmax(t["classaware_f1"]))
+            res.update(
+                {
+                    "sweep/classaware_f1_max": float(t["classaware_f1"][best_ca]),
+                    "sweep/classaware_thresh_at_f1_max": float(t["thresh"][best_ca]),
+                    "sweep/classaware_precision": float(
+                        t["classaware_precision"][best_ca]
+                    ),
+                    "sweep/classaware_recall": float(t["classaware_recall"][best_ca]),
+                }
+            )
+        return res
 
     # ------------------------------------------------------------------ artifacts
 
@@ -526,7 +682,7 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         except AssertionError:
             return "final"
 
-    def _write_artifacts(self, records, confusion, false_neg_pc, false_pos_pc):
+    def _write_artifacts(self, records, confusion, false_neg_pc, false_pos_pc, sweep=None):
         # Every periodic eval during training reused these same filenames, so each
         # HUNGARIAN_EVAL.PERIOD run silently clobbered the previous one's confusion
         # matrix. Archive a copy per iteration under hungarian_confusion/ alongside the
@@ -537,8 +693,33 @@ class HungarianInstanceEvaluator(DatasetEvaluator):
         )
         for out_dir in (self._output_dir, archive_dir):
             os.makedirs(out_dir, exist_ok=True)
-        self._write_artifacts_to(self._output_dir, records, confusion, false_neg_pc, false_pos_pc)
-        self._write_artifacts_to(archive_dir, records, confusion, false_neg_pc, false_pos_pc)
+        for out_dir in (self._output_dir, archive_dir):
+            self._write_artifacts_to(out_dir, records, confusion, false_neg_pc, false_pos_pc)
+            if sweep is not None:
+                self._write_sweep_csv(out_dir, sweep, len(records))
+
+    def _write_sweep_csv(self, out_dir, t, n_images):
+        """One row per sweep threshold: the whole F1 / SQ / PQ curve behind sweep/*."""
+        path = os.path.join(out_dir, "instance_matching_threshold_sweep.csv")
+        n = max(n_images, 1)
+        with open(path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(
+                ["score_thresh", "f1", "precision", "recall", "sq", "pq",
+                 "tp", "fp", "fn", "dup", "fp_per_image", "dup_per_image",
+                 "mis", "classaware_f1", "classaware_precision", "classaware_recall"]
+            )
+            classaware = ("classaware_f1", "classaware_precision", "classaware_recall")
+            for i in range(len(t["thresh"])):
+                w.writerow(
+                    [f"{t['thresh'][i]:.4f}"]
+                    + [f"{t[k][i]:.4f}" for k in ("f1", "precision", "recall", "sq", "pq")]
+                    + [int(t[k][i]) for k in ("tp", "fp", "fn", "dup")]
+                    + [f"{t['fp'][i] / n:.4f}", f"{t['dup'][i] / n:.4f}"]
+                    + [int(t["mis"][i])]
+                    + [f"{t[k][i]:.4f}" for k in classaware]
+                )
+        self._logger.info("[HungarianInstanceEvaluator] wrote %s", path)
 
     def _write_artifacts_to(self, out_dir, records, confusion, false_neg_pc, false_pos_pc):
         max_id = 0

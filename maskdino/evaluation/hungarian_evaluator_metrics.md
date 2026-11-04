@@ -21,6 +21,7 @@ namespace (TensorBoard tags `instance_matching/<field>`).
 | `SCORE_THRESH` | `0.5` | drop predictions below this confidence before matching |
 | `IOU_THRESH` | `0.5` | min mask IoU for a match to be accepted |
 | `BOX_PREFILTER` | `True` | bounding-box prune before the exact mask-IoU matmul (optimization only) |
+| `SWEEP_THRESHOLDS` | `[]` | extra score thresholds to re-match at; non-empty turns on the `sweep/*` fields below |
 
 GT visibility filtering is **not** a knob here — the evaluator reuses `cfg.INPUT.MIN_VISIBILITY`
 (the training-time GT filter) so recall is measured against the same GT distribution the
@@ -110,6 +111,50 @@ forceps: found it (`classagnostic_recall_per_class = 1.0`) but named it wrong
 `category_id ≥ 1`, so misclassification is disabled — `num_misclassified` stays `0`, the
 `misclassified_per_class/*` group is dropped, and `classaware_*` equals `classagnostic_*`.
 
+## Threshold sweep (`sweep/*`, only when `SWEEP_THRESHOLDS` is non-empty)
+
+Every number above is measured at one operating point, `SCORE_THRESH`. A change that only
+shifts score calibration (learning rate, augmentation, loss weights) moves those
+numbers without making the model better or worse at the threshold it would actually be
+deployed at. The sweep re-runs the classagnostic matching at each listed threshold, using
+the same rules (Hungarian, `IOU_THRESH`, ignore regions). The IoU matrix is computed once
+per frame over the predictions above the lowest threshold, and every threshold reuses
+it. The sweep then reports the best operating point:
+
+| field | meaning |
+|---|---|
+| `sweep/f1_max` | max over thresholds of F1 = `TP / (TP + ½FP + ½FN)` (PQ's recognition quality) |
+| `sweep/thresh_at_f1_max` | the score threshold where `f1_max` occurs (ties: lowest), i.e. this model's deployment threshold |
+| `sweep/precision`, `sweep/recall` | at `thresh_at_f1_max` |
+| `sweep/sq` | mean matched IoU (segmentation quality) at `thresh_at_f1_max` |
+| `sweep/fp_per_image` | false positives per frame at `thresh_at_f1_max` |
+| `sweep/dup_per_image` | duplicates per frame at `thresh_at_f1_max`: false positives that overlap a GT at `≥ IOU_THRESH`. The matching maximizes the pair count, so that GT is already taken, which makes a duplicate a second mask on a found instance. A downstream classifier cannot remove it. |
+| `sweep/pq_max` | max over thresholds of PQ = SQ × F1 |
+
+**Multi-class only**, the class-aware F1 is swept too. The matching is the same
+label-blind one; each accepted pair with the wrong label (`mis`) then counts as both a
+false positive and a false negative: TP − mis, FP + mis, FN + mis. The denominators
+reduce to the class-agnostic ones, so class-aware F1 = F1 × (1 − mis / TP), the
+identity in `docs/stage1_optuna_objective.md`. Its best threshold can differ from
+`thresh_at_f1_max`: a low-scoring match with the wrong label raises the class-agnostic
+F1 but lowers the class-aware one. Compare multi-class models on these fields, not on
+the fixed-threshold `classaware_f1`, which depends on score calibration.
+
+| field | meaning |
+|---|---|
+| `sweep/classaware_f1_max` | max over thresholds of class-aware F1 |
+| `sweep/classaware_thresh_at_f1_max` | the threshold where it occurs (ties: lowest) |
+| `sweep/classaware_precision`, `sweep/classaware_recall` | at `classaware_thresh_at_f1_max` |
+
+When `SCORE_THRESH` is one of the sweep thresholds, the sweep's TP / FP / FN / mis at that
+threshold equal `num_mask_matched_total` / `false_positives_total` /
+`false_negatives_total` / `misclassified_total`, and its class-aware precision / recall /
+F1 there equal `classaware_precision` / `classaware_recall` / `classaware_f1`. The choice of
+objective is explained in `docs/stage1_optuna_objective.md`.
+
+`tools/score_predictions.py` runs this evaluator, with the sweep on, over a prediction
+file from any framework (see `tools/README.md`).
+
 ## Artifacts
 
 Written to `<OUTPUT_DIR>/inference/` (only on the main process, when an `output_dir` is set):
@@ -120,6 +165,7 @@ Written to `<OUTPUT_DIR>/inference/` (only on the main process, when an `output_
 | `instance_matching_confusion_rownorm.csv` | same, row-normalized so **every row sums to 1**: GT rows ÷ that class's GT total (diagonal = `classaware_recall_per_class`, `(false negative)` cell = false-negative rate); `(false positive)` row ÷ total false-positive count (cell = that label's share of all spurious predictions). |
 | `instance_matching_confusion.png` | heatmap of the row-normalized matrix, each cell annotated `fraction% / count`. |
 | `instance_matching_per_image.csv` | one row per frame: `image_id, file_name, num_gt, num_pred, num_mask_matched, num_correct_class, num_false_neg, num_false_pos, num_misclassified, sum_iou_matched`. |
+| `instance_matching_threshold_sweep.csv` | sweep only: one row per threshold with `f1, precision, recall, sq, pq, tp, fp, fn, dup, fp_per_image, dup_per_image, mis, classaware_f1, classaware_precision, classaware_recall` (single-class: `mis` is 0 and the class-aware columns equal the class-agnostic ones), the whole curve behind `sweep/*`. Also archived per iteration under `hungarian_confusion/`. |
 
 Under `--eval-only` the scalar dict is only printed / JSON-logged (no TensorBoard); the
 artifacts are still written.

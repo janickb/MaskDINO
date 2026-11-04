@@ -20,6 +20,7 @@ from maskdino.evaluation.hungarian_instance_evaluation import (
     crowd_overlap,
     hungarian_match,
     mask_iou_matrix,
+    match_counts,
 )
 
 H = W = 40
@@ -64,6 +65,7 @@ def make_evaluator(
     box_prefilter=True,
     gt_by_image_id=None,
     hw_by_image_id=None,
+    sweep_thresholds=(),
 ):
     ev = object.__new__(HungarianInstanceEvaluator)
     ev._dataset_name = "test"
@@ -73,6 +75,7 @@ def make_evaluator(
     ev._cpu_device = torch.device("cpu")
     ev._score_thresh = float(score_thresh)
     ev._iou_thresh = float(iou_thresh)
+    ev._sweep_thresholds = tuple(sorted(float(t) for t in sweep_thresholds))
     ev._min_visibility = 0.0
     ev._box_prefilter = bool(box_prefilter)
     ev._num_classes = int(num_classes)
@@ -552,3 +555,208 @@ def test_artifacts_png_written(tmp_path):
     ev.evaluate()
     png = tmp_path / "instance_matching_confusion.png"
     assert png.exists() and png.stat().st_size > 0
+
+
+# --------------------------------------------------------------------------- threshold sweep
+
+
+def _singleclass(**kw):
+    return make_evaluator(num_classes=1, thing_classes=["c0", "c1"], **kw)
+
+
+def test_sweep_off_by_default():
+    ev = _singleclass()
+    r = run_one(ev, 1, [(rect(0, 0, 12, 12), 1)], ([rect(0, 0, 12, 12)], [0.9], [0]))
+    assert "sweep_tp" not in r
+    assert not any(k.startswith("sweep/") for k in ev.evaluate()["instance_matching"])
+
+
+def test_sweep_at_score_thresh_equals_fixed_metrics():
+    ev = _singleclass(score_thresh=0.5, sweep_thresholds=(0.9, 0.1, 0.5))
+    # hit @0.9, hit below SCORE_THRESH @0.3, hallucination @0.6, duplicate of the first
+    # GT @0.2, detection of an ignore region @0.7
+    run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1), (rect(0, 20, 12, 32), 1), (rect(26, 0, 38, 12), 1)],
+        (
+            [rect(0, 0, 12, 12), rect(0, 20, 12, 32), rect(26, 26, 38, 38),
+             rect(0, 0, 12, 11), rect(14, 14, 24, 24)],
+            [0.9, 0.3, 0.6, 0.2, 0.7],
+            [0, 0, 0, 0, 0],
+        ),
+        crowd=[rect(14, 14, 24, 24)],
+    )
+    res = ev.evaluate()["instance_matching"]
+    t = ev._sweep_table(ev._records)
+    i = list(t["thresh"]).index(0.5)
+    assert t["tp"][i] == res["num_mask_matched_total"] == 1
+    assert t["fp"][i] == res["false_positives_total"] == 1
+    assert t["fn"][i] == res["false_negatives_total"] == 2
+    assert t["f1"][i] == pytest.approx(res["classagnostic_f1"])
+    assert t["sq"][i] == pytest.approx(res["mean_iou_matched"])
+    # 0.1 adds the second hit and the duplicate; 0.9 keeps only the first hit
+    assert list(t["tp"]) == [2, 1, 1]
+    assert list(t["fp"]) == [2, 1, 0]
+    assert list(t["dup"]) == [1, 0, 0]
+
+
+def test_sweep_f1_max_picks_best_threshold():
+    ev = _singleclass(score_thresh=0.5, sweep_thresholds=(0.1, 0.5, 0.9))
+    # one hit @0.95, one hallucination @0.4, one hit @0.7
+    run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1), (rect(0, 20, 12, 32), 1)],
+        (
+            [rect(0, 0, 12, 12), rect(26, 26, 38, 38), rect(0, 20, 12, 32)],
+            [0.95, 0.4, 0.7],
+            [0, 0, 0],
+        ),
+    )
+    res = ev.evaluate()["instance_matching"]
+    assert res["sweep/f1_max"] == pytest.approx(1.0)
+    assert res["sweep/thresh_at_f1_max"] == pytest.approx(0.5)
+    assert res["sweep/f1_max"] >= res["classagnostic_f1"]
+    assert res["sweep/fp_per_image"] == 0.0
+
+
+def test_sweep_ties_go_to_lowest_threshold():
+    ev = _singleclass(sweep_thresholds=(0.1, 0.3, 0.5))
+    # the second hit scores 0.3: 0.1 and 0.3 both find everything
+    run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1), (rect(0, 20, 12, 32), 1)],
+        ([rect(0, 0, 12, 12), rect(0, 20, 12, 32)], [0.9, 0.3], [0, 0]),
+    )
+    res = ev.evaluate()["instance_matching"]
+    assert res["sweep/f1_max"] == pytest.approx(1.0)
+    assert res["sweep/thresh_at_f1_max"] == pytest.approx(0.1)
+
+
+def test_sweep_duplicate_is_a_false_positive_on_a_found_instance():
+    ev = _singleclass(sweep_thresholds=(0.5,))
+    # exact hit, a near-copy of it (IoU 132/144), and a hallucination elsewhere
+    r = run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1)],
+        (
+            [rect(0, 0, 12, 12), rect(0, 0, 12, 11), rect(26, 26, 38, 38)],
+            [0.9, 0.8, 0.7],
+            [0, 0, 0],
+        ),
+    )
+    assert r["sweep_tp"] == [1]
+    assert r["sweep_fp"] == [2]
+    assert r["sweep_dup"] == [1]
+    res = ev.evaluate()["instance_matching"]
+    assert res["sweep/dup_per_image"] == 1.0
+    assert res["sweep/fp_per_image"] == 2.0
+
+
+def test_sweep_ignores_crowd_detections_at_every_threshold():
+    ev = _singleclass(sweep_thresholds=(0.1, 0.5, 0.9))
+    r = run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1)],
+        (
+            [rect(0, 0, 12, 12), rect(20, 20, 32, 32), rect(21, 21, 31, 31)],
+            [0.95, 0.3, 0.92],
+            [0, 0, 0],
+        ),
+        crowd=[rect(20, 20, 32, 32)],
+    )
+    assert r["sweep_fp"] == [0, 0, 0]
+    assert r["sweep_tp"] == [1, 1, 1]
+
+
+def test_match_counts_empty_sides():
+    assert match_counts(torch.zeros((0, 2)), np.zeros(0, bool), 0.5) == (0, 0, 2, 0.0, 0, 0)
+    assert match_counts(torch.zeros((2, 0)), np.zeros(2, bool), 0.5) == (0, 2, 0, 0.0, 0, 0)
+    assert match_counts(torch.zeros((2, 0)), np.ones(2, bool), 0.5) == (0, 0, 0, 0.0, 0, 0)
+
+
+def test_sweep_csv_and_flat_results(tmp_path):
+    from collections import OrderedDict
+
+    from detectron2.evaluation.testing import flatten_results_dict, print_csv_format
+
+    grid = (0.1, 0.3, 0.5, 0.7, 0.9)
+    ev = _singleclass(sweep_thresholds=grid, output_dir=tmp_path)
+    run_one(ev, 1, [(rect(0, 0, 12, 12), 1)], ([rect(0, 0, 12, 12)], [0.6], [0]))
+    run_one(ev, 2, [(rect(0, 0, 12, 12), 1)], ([rect(25, 25, 38, 38)], [0.8], [0]))
+    result = ev.evaluate()
+    for k, v in flatten_results_dict(result).items():
+        assert isinstance(float(v), float), k
+    print_csv_format(OrderedDict(result))
+
+    rows = _read_csv(tmp_path / "instance_matching_threshold_sweep.csv")
+    assert rows[0][0] == "score_thresh"
+    assert rows[0][-4:] == ["mis", "classaware_f1", "classaware_precision", "classaware_recall"]
+    assert [float(r[0]) for r in rows[1:]] == pytest.approx(list(grid))
+    archived = list(tmp_path.glob("hungarian_confusion/*/instance_matching_threshold_sweep.csv"))
+    assert len(archived) == 1
+
+
+def test_match_counts_counts_mislabeled_pairs():
+    masks = torch.stack([rect(0, 0, 12, 12), rect(0, 20, 12, 32)])
+    iou = mask_iou_matrix(masks, masks)
+    out = match_counts(iou, np.zeros(2, bool), 0.5, np.array([1, 1]), np.array([1, 2]))
+    assert out[0] == 2  # both matched: the matching ignores labels
+    assert out[5] == 1
+    assert match_counts(iou, np.zeros(2, bool), 0.5)[5] == 0  # no labels given
+
+
+def test_sweep_classaware_can_pick_a_different_threshold():
+    ev = make_evaluator(num_classes=3, sweep_thresholds=(0.1, 0.5))
+    # a correct hit @0.9, a hit with the wrong label @0.3
+    r = run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1), (rect(0, 20, 12, 32), 2)],
+        ([rect(0, 0, 12, 12), rect(0, 20, 12, 32)], [0.9, 0.3], [1, 1]),
+    )
+    assert r["sweep_mis"] == [1, 0]
+    res = ev.evaluate()["instance_matching"]
+    # 0.1: both found, one mislabeled -> classagnostic 1.0, classaware 2*1 / 4 = 0.5
+    # 0.5: one found, labeled right   -> both 2 / 3
+    assert res["sweep/f1_max"] == pytest.approx(1.0)
+    assert res["sweep/thresh_at_f1_max"] == pytest.approx(0.1)
+    assert res["sweep/classaware_f1_max"] == pytest.approx(2 / 3)
+    assert res["sweep/classaware_thresh_at_f1_max"] == pytest.approx(0.5)
+    assert res["sweep/classaware_precision"] == pytest.approx(1.0)
+    assert res["sweep/classaware_recall"] == pytest.approx(0.5)
+
+
+def test_sweep_classaware_at_score_thresh_equals_fixed_metrics():
+    ev = make_evaluator(num_classes=3, score_thresh=0.5, sweep_thresholds=(0.1, 0.5, 0.9))
+    # correct hit @0.9, mislabeled hit @0.6, hallucination @0.7, missed GT
+    run_one(
+        ev,
+        1,
+        [(rect(0, 0, 12, 12), 1), (rect(0, 20, 12, 32), 2), (rect(26, 0, 38, 12), 1)],
+        (
+            [rect(0, 0, 12, 12), rect(0, 20, 12, 32), rect(26, 26, 38, 38)],
+            [0.9, 0.6, 0.7],
+            [1, 1, 2],
+        ),
+    )
+    res = ev.evaluate()["instance_matching"]
+    t = ev._sweep_table(ev._records)
+    i = list(t["thresh"]).index(0.5)
+    assert t["mis"][i] == res["misclassified_total"] == 1
+    assert t["classaware_f1"][i] == pytest.approx(res["classaware_f1"])
+    assert t["classaware_precision"][i] == pytest.approx(res["classaware_precision"])
+    assert t["classaware_recall"][i] == pytest.approx(res["classaware_recall"])
+
+
+def test_sweep_singleclass_has_no_classaware_fields():
+    ev = _singleclass(sweep_thresholds=(0.5,))
+    # GT category 1 vs predicted 0 is not a misclassification with one class
+    r = run_one(ev, 1, [(rect(0, 0, 12, 12), 1)], ([rect(0, 0, 12, 12)], [0.9], [0]))
+    assert r["sweep_mis"] == [0]
+    res = ev.evaluate()["instance_matching"]
+    assert not any(k.startswith("sweep/classaware") for k in res)

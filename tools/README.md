@@ -64,3 +64,36 @@ python tools/compare_backbone_weights.py --finetuned runs/multi_class_seta_froze
 
 python tools/compare_backbone_weights.py --finetuned runs/multi_class_seta_unfrozen_backbone/model_final.pth --cka --image-dir /path/to/sample_images
 ```
+
+
+* `score_predictions.py`, `export_predictions_jsonl.py`
+
+One scorer for every model in a comparison, whatever framework produced the
+predictions (MaskDINO, Mask2Former, Ultralytics YOLO, ...). `score_predictions.py`
+reads a JSON Lines file with one line per frame (HDF5 basename, class names, scores,
+full-resolution COCO RLE masks; the exact format is in its docstring) and runs
+`HungarianInstanceEvaluator` on it. The GT is prepared as `train_net.setup()` prepares
+`DATASETS.TEST`: frame-edge-truncated tools become ignore regions, and the
+`MIN_VISIBILITY` filter applies. The score threshold is swept over 0.10 to 0.90, both
+class-agnostic and class-aware. The output dir gets `metrics.json` (the numbers to
+report), `score_settings.json` and the `instance_matching_*` artifacts. The scorer
+fails, listing every problem, if a frame is missing or listed twice, or if a class
+name, score or mask size is wrong.
+
+`export_predictions_jsonl.py` writes that format from a detectron2 eval's
+`inference/instances_predictions.pth`, so MaskDINO and Mask2Former runs are scored
+through the same path as the others.
+
+```
+./.venv/bin/python tools/export_predictions_jsonl.py --dataset val_set_a_mm \
+    --predictions runs/<run>/inference/instances_predictions.pth \
+    --output runs/<run>/predictions/val_set_a_mm.jsonl
+./.venv/bin/python tools/score_predictions.py --dataset val_set_a_mm \
+    --predictions runs/<run>/predictions/val_set_a_mm.jsonl \
+    --output-dir runs/<run>/score/val_set_a_mm
+```
+
+Pass the `*_singleclass` dataset name for a single-class model. Set `--min-visibility`
+to the compared recipe's `INPUT.MIN_VISIBILITY` (the default 0.0 is phase 1's). A
+strided in-training eval (`TEST_SAMPLE_STRIDE: 4`) needs `--sample-stride 4`. Other
+models' runs call the scorer from this repo's venv as a command, never as an import.

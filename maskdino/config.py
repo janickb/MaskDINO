@@ -178,6 +178,9 @@ def add_maskdino_config(cfg):
     cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SCORE_THRESH = (
         0.5  # drop preds below this confidence
     )
+    # Score thresholds to re-match at on top of SCORE_THRESH, reported as the best
+    # operating point (instance_matching/sweep/*). [] = off -> existing runs unchanged.
+    cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.SWEEP_THRESHOLDS = []
     cfg.MODEL.MaskDINO.TEST.HUNGARIAN_EVAL.IOU_THRESH = (
         0.5  # min mask IoU for a match to be accepted
     )
