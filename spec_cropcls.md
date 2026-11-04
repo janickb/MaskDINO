@@ -164,9 +164,10 @@ cropcls/
   data.py                 loader: detect -> assign -> crop -> augment (step 5)
   modeling/classifier.py  CNN trunk + global pool + linear head    (step 6)
   metrics.py              top-1 on matched masks, timing aggregation
+  gradcam.py              Grad-CAM over the trunk's last stage     (step 11)
 train_cropcls.py      own training loop, --eval-only, --viz-only
 configs/cropcls/phase1_seta.yaml
-tests/test_cropcls_{crops,assign,detector,timing}.py
+tests/test_cropcls_{crops,assign,detector,timing,gradcam}.py
 ```
 
 - [x] **Step 0 - scaffolding.** Package + config dataclass + `configs/cropcls/phase1_seta.yaml`.
@@ -265,5 +266,74 @@ tests/test_cropcls_{crops,assign,detector,timing}.py
 
 - [ ] **Step 9 - full run** at the `MAX_ITER` chosen from the step-5 timings.
 
+- [ ] **Step 11 - Grad-CAM at inference** (`requirements_gradcam.md`). Step 10 is the
+      mask-channel arm, whose code is already merged here (35073cf) while its spec amendment is
+      still an uncommitted edit in the `42-train-on-maskdino-segmenter-and-seperate-classifier`
+      worktree; this step takes 11 so the two do not collide on merge.
+
+      `cropcls/gradcam.py` renders where the trunk looked, for the **predicted** class, on the
+      crop as the model saw it. It attaches to the two inspection paths only: `--eval-only`
+      writes `<run>/gradcam/`, one sheet per GT class with the most-confident errors first, and
+      `--viz-only` grows a 4th column on the step-4 contact sheet - but only when a checkpoint
+      resolves, so the gate still runs before any training exists.
+      `tools/viz_misclassified.py` gets the same panel. No metric and no ranking: the maps
+      explain a prediction, they do not score one.
+
+      "Most-confident first" is over the **whole** val pass, not over whatever the scan saw
+      first: the sheets keep a bounded top-`per_class` per (GT class, right/wrong) bucket and
+      evict the weakest as the pass streams, which is exact because the ranking key is each
+      crop's own probability. Stopping the scan once every class had its quota was the first
+      design and is wrong - it locks in whichever errors appear early and never sees the
+      confident ones later in the set (preflight finding, 2026-11-03). The cost is therefore a
+      second full val pass, grad-enabled, on top of `evaluate()`'s `no_grad` one;
+      `--gradcam-per-class 0` disables it.
+
+      The target layer is read from `trunk.feature_info[-1]["module"]` - `layer4` on resnet50 and
+      resnet50d, `stages.3` on convnext_tiny - for the same reason the mask channel reads
+      `pretrained_cfg["first_conv"]`: a per-trunk table goes stale the first time someone passes
+      a different `trunk=`. `--gradcam-layer` overrides it, which is also how to get the 14x14
+      read (`layer3` / `stages.2`) when the last stage's 7x7 at crop 224 is too coarse to judge
+      forcep01-04.
+
+      Two traps, both measured on `dbe-cia-sl19-01` rather than assumed:
+      - The crop tensor must get `requires_grad_(True)`. Under `freeze_trunk: true` every trunk
+        parameter is a non-grad leaf, so nothing in the activation's history requires grad and
+        `torch.autograd.grad` raises `One of the differentiated Tensors does not require grad`.
+        An **unfrozen** trunk works either way, which is exactly what hides it.
+      - The map is normalized per crop by its own max. The raw CAM peak is of order 1e-3 at
+        init, so an unnormalized map renders black and reads as "the model looks nowhere".
+        Only the order matters: the magnitude tracks the crop size (1.6e-03 at crop 224,
+        1.6e-02 at crop 64), so a normalization keyed to any fixed constant would be wrong.
+
+      Gradients come from `torch.autograd.grad`, not `.backward()`, so no parameter `.grad` is
+      written - `--eval-only` and the in-training monitor share the model object with the
+      optimizer. fp16 autocast was measured to give the same gradients - `grad_absmax` 7.3053e-04
+      (fp32) against 7.3051e-04 (fp16), four significant figures, and the agreement holds at every
+      crop size and device tried even though the magnitude itself does not. So the fp32 path is a
+      determinism choice, **not** a correctness fix, and must not be written up as one.
+
+      Harness for both numbers, because neither is reproducible without it: `resnet50`,
+      `pretrained=False`, crop 224, `manual_seed(0)` for the model and `manual_seed(1)` for the
+      input, CUDA on `dbe-cia-sl19-01` (CPU agrees on `grad_absmax` to the same 4 figures).
+
+      **Verify:** `tests/test_cropcls_gradcam.py`, parametrized over `resnet50` / `resnet50d` /
+      `convnext_tiny` on CPU with `pretrained=False` - the layer resolves to the last feature
+      stage; the map is `(B, S, S)` with max 1.0; a **frozen** trunk still yields a non-zero map
+      (deleting the `requires_grad_` line raises instead); the map is neither all-zero nor
+      uniform; the target class changes it; a 4-channel `mask_channel` crop is accepted; and
+      after a call no parameter holds a `.grad`, no forward hook is left on the target layer and
+      `model.training` is unchanged.
+
 **Out of scope (explicit):** phase 2 / set B, COCO AP as a headline metric (argmax cannot hedge
 the way `instance_inference`'s `topk(100)` does), any modification to `maskdino/` or `train_net.py`.
+
+Out of scope for **Step 11** specifically (`requirements_gradcam.md`): `--hungarian` and
+`cropcls/export.py` - that path returns before the crop-top1 code and runs no GT assignment, so
+a panel there would have no label to caption; the detector's own decoder attention, which is a
+different artifact for a different model and already exists on branch
+`49-attention-visualization-export` (`maskdino/visualization/attention.py`);
+`tools/viz_class_crops.py`, `tools/class_report.py` and `tools/loss_breakdown.py`; a
+`CropClsConfig` field for any of it, since the `--eval-only` probe replays a finished run's
+`config.json` and a visualization switch is not part of the architecture record; and a
+`pytorch-grad-cam` / `captum` dependency, where ~60 lines of stock PyTorch do the job (step 6:
+"Stock PyTorch ops only").

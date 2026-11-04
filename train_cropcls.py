@@ -11,6 +11,12 @@ and head. See spec_cropcls.md.
     gate     python train_cropcls.py --config ... --viz-only
     smoke    python train_cropcls.py --config ... --val-frames 4 max_iter=50
 
+Both inspection paths also render Grad-CAM - where the trunk looked, for the predicted class.
+`--eval-only` writes `<run>/gradcam/`, one sheet per GT class with the most-confident errors
+first; `--viz-only` adds a 4th column to the contact sheet, but only when a classifier
+checkpoint resolves, since the step-4 gate runs before one exists. `--gradcam-per-class 0`
+turns both off.
+
 Any config field takes a `key=value` override on the command line. They are collected
 with argparse.REMAINDER, so they must come LAST: a flag written after one is swallowed
 into the override list and, having no "=", silently dropped.
@@ -56,6 +62,12 @@ def parse_args():
     p.add_argument("--hungarian", action="store_true",
                    help="score with HungarianInstanceEvaluator (step 8: comparable to the "
                         "8-class baseline's classaware_f1), not just crop top-1")
+    p.add_argument("--gradcam-per-class", type=int, default=8,
+                   help="crops per GT class on the --eval-only grad-cam sheets, errors first; "
+                        "0 disables grad-cam in both --eval-only and --viz-only")
+    p.add_argument("--gradcam-layer", default=None,
+                   help="trunk submodule to read the grad-cam from. Default: the last feature "
+                        "stage (layer4 / stages.3). `layer3` / `stages.2` is the 14x14 read.")
     p.add_argument("--device", default="cuda")
     p.add_argument("opts", nargs=argparse.REMAINDER, help="key=value config overrides")
     return p.parse_args()
@@ -232,25 +244,44 @@ def main():
         logger.info("%s=%s (%d frames)", split, name, len(pipe))
         return pipe
 
+    def build_and_load(weights: str):
+        m = build_classifier(cfg, len(class_names)).to(device)
+        logger.info(
+            "classifier: trunk=%s dim=%d trainable=%s",
+            cfg.trunk, m.feature_dim, f"{m.n_trainable():,}",
+        )
+        if weights:
+            state = torch.load(weights, map_location="cpu", weights_only=False)
+            m.load_state_dict(state["model"])
+            logger.info("loaded weights from %s (iter %s)", weights, state.get("iteration"))
+        return m
+
     # visualization of crops on which are trained on
     if args.viz_only:
+        from cropcls.gradcam import CropGradCAM
         from cropcls.viz import write_contact_sheets
 
+        # The grad-cam column needs a trained head, and this is the step-4 gate: it normally
+        # runs before any checkpoint exists. So a missing one drops the column and says so,
+        # rather than failing a gate that never needed a classifier.
+        ckpt = cfg.weights or str(out / "model_final.pth")
+        cam = None
+        if args.gradcam_per_class and Path(ckpt).is_file():
+            cam = CropGradCAM(build_and_load(ckpt), layer=args.gradcam_layer)
+        else:
+            logger.info(
+                "no grad-cam column: %s",
+                "--gradcam-per-class 0"
+                if not args.gradcam_per_class
+                else f"no classifier checkpoint at {ckpt}",
+            )
         paths = write_contact_sheets(
-            build_pipe("train"), out / "viz", list(range(args.viz_frames))
+            build_pipe("train"), out / "viz", list(range(args.viz_frames)), cam=cam
         )
         logger.info("wrote %d contact sheets to %s", len(paths), out / "viz")
         return
 
-    model = build_classifier(cfg, len(class_names)).to(device)
-    logger.info(
-        "classifier: trunk=%s dim=%d trainable=%s",
-        cfg.trunk, model.feature_dim, f"{model.n_trainable():,}",
-    )
-    if cfg.weights:
-        state = torch.load(cfg.weights, map_location="cpu", weights_only=False)
-        model.load_state_dict(state["model"])
-        logger.info("loaded weights from %s (iter %s)", cfg.weights, state.get("iteration"))
+    model = build_and_load(cfg.weights)
 
     if args.eval_only and args.hungarian:
         from cropcls.export import evaluate_hungarian
@@ -278,13 +309,26 @@ def main():
         return
 
     if args.eval_only:
-        m = evaluate(model, build_pipe("val"), device, max_frames=args.val_frames)
+        pipe = build_pipe("val")
+        m = evaluate(model, pipe, device, max_frames=args.val_frames)
         logger.info("val_top1=%.4f val_loss=%.4f over %d crops", m["val_top1"], m["val_loss"], m["val_n"])
         for k, v in m["per_class"].items():
             logger.info("   %-18s %.4f", k, v)
         dst = out / "eval_evalonly.json"
         dst.write_text(json.dumps(m, indent=2))
         logger.info("wrote %s", dst)
+        if args.gradcam_per_class:
+            # A second pass, and deliberately: evaluate() runs under no_grad and a CAM needs
+            # the backward. The maps are a diagnostic - no number here is rankable.
+            from cropcls.viz import write_gradcam_sheets
+
+            paths = write_gradcam_sheets(
+                model, pipe, device, out / "gradcam",
+                per_class=args.gradcam_per_class,
+                max_frames=args.val_frames,
+                layer=args.gradcam_layer,
+            )
+            logger.info("wrote %d grad-cam sheets to %s", len(paths), out / "gradcam")
         return
 
     # Validation stays on the live path either way: caching it would need a second folder and

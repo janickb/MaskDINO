@@ -11,6 +11,9 @@ Scored on matched masks only (the crops that pass the IoU floor and runner-up ce
 i.e. the same population as train_cropcls.py's `val_top1` monitor. That makes this a
 diagnostic of the CLASSIFIER, not of the run's classaware_f1: masks the detector missed
 never appear here.
+
+Each panel is paired with the Grad-CAM of the predicted class (`cropcls/gradcam.py`) - where
+the model looked to make the error. `--no-gradcam` renders the crops alone.
 """
 from __future__ import annotations
 
@@ -31,7 +34,9 @@ import maskdino  # noqa: F401  - registers the hdf5 datasets
 from cropcls.config import load_config
 from cropcls.data import CropPipeline, apply_truncated_filter, apply_val_stride
 from cropcls.detector import FrozenSingleClassDetector
+from cropcls.gradcam import CropGradCAM, cam_in_chunks
 from cropcls.modeling import build_classifier
+from cropcls.viz import cam_overlay, denorm_crop
 
 COLS = [
     "frame", "pred_index", "gt_class", "pred_class", "p_pred", "p_gt",
@@ -46,21 +51,21 @@ def parse_args():
     ap.add_argument("--out", default=None, help="default <run>/misclassified")
     ap.add_argument("--frames", type=int, default=None, help="cap val frames (smoke runs)")
     ap.add_argument("--per-sheet", type=int, default=24)
+    ap.add_argument("--no-gradcam", action="store_true", help="crops only, no grad-cam panel")
+    ap.add_argument("--gradcam-layer", default=None,
+                    help="trunk submodule to read the grad-cam from; default the last stage")
     ap.add_argument("--device", default="cuda")
     return ap.parse_args()
 
 
-def denorm(crop: torch.Tensor, mean, std) -> torch.Tensor:
-    m = torch.as_tensor(mean).view(-1, 1, 1)
-    s = torch.as_tensor(std).view(-1, 1, 1)
-    # A mask_channel run carries a 4th channel that was never normalized by these stats.
-    crop = crop[: len(mean)]
-    return (crop * s + m).clamp(0, 255).byte().permute(1, 2, 0)
-
-
 @torch.no_grad()
-def collect(model, pipe, device, max_frames=None):
-    """Every misclassified crop, with its probabilities and the crop as the model saw it."""
+def collect(model, pipe, device, max_frames=None, cam: CropGradCAM | None = None):
+    """Every misclassified crop, with its probabilities and the crop as the model saw it.
+
+    `cam` adds the Grad-CAM of the predicted class. It runs on the wrong crops only, and
+    re-enables grad from inside this no_grad scope - which is what `CropGradCAM` does and why
+    the decorator can stay on the scoring forward.
+    """
     n = len(pipe) if max_frames is None else min(max_frames, len(pipe))
     step = pipe.cfg.ims_per_batch
     wrong, total = [], 0
@@ -76,7 +81,19 @@ def collect(model, pipe, device, max_frames=None):
         pred = prob.argmax(1)
         total += len(batch)
 
-        for i in (pred != batch.labels).nonzero(as_tuple=True)[0].tolist():
+        wrong_idx = (pred != batch.labels).nonzero(as_tuple=True)[0].tolist()
+        # targets=pred, not the CAM's own argmax: the caption comes from the fp16 autocast
+        # forward above and the CAM pass is fp32, so on a near-tie the two can disagree and
+        # the panel would explain one class under the other's label.
+        heat = (
+            cam_in_chunks(
+                cam, x[wrong_idx], x.device, pipe.cfg.crops_per_batch,
+                targets=pred[wrong_idx],
+            )[0]
+            if (cam is not None and wrong_idx)
+            else None
+        )
+        for j, i in enumerate(wrong_idx):
             p = prob[i]
             gt, pi = int(batch.labels[i]), int(pred[i])
             # Runner-up behind the prediction: with pred != gt it is often the GT class,
@@ -97,40 +114,58 @@ def collect(model, pipe, device, max_frames=None):
                 "best_iou": round(r.best_iou, 4),
                 "runner_up_iou": round(r.runner_up_iou, 4),
                 "det_score": round(r.score, 4),
-                "_crop": denorm(batch.crops[i], pipe.cfg.pixel_mean, pipe.cfg.pixel_std),
+                "_crop": denorm_crop(batch.crops[i], pipe.cfg.pixel_mean, pipe.cfg.pixel_std),
+                "_cam": None if heat is None else heat[j],
             })
     return wrong, total
 
 
 def sheets(wrong, out: Path, per_sheet: int, cols: int = 6) -> list[Path]:
-    """One contact sheet per GT class, most-confident error first."""
+    """One contact sheet per GT class, most-confident error first.
+
+    With a Grad-CAM on each record the panels come in pairs (crop, cam), so a row holds
+    cols // 2 items rather than cols.
+    """
     by_gt = defaultdict(list)
     for w in wrong:
         by_gt[w["gt_class"]].append(w)
+
+    per_item = 2 if any(w.get("_cam") is not None for w in wrong) else 1
+    per_row = max(1, cols // per_item)
 
     written = []
     for gt, items in sorted(by_gt.items()):
         items.sort(key=lambda w: -w["p_pred"])
         for page, s in enumerate(range(0, len(items), per_sheet)):
             chunk = items[s : s + per_sheet]
-            rows = (len(chunk) + cols - 1) // cols
-            fig, axes = plt.subplots(rows, cols, figsize=(2.3 * cols, 2.75 * rows), squeeze=False)
+            rows = (len(chunk) + per_row - 1) // per_row
+            fig, axes = plt.subplots(
+                rows, per_row * per_item,
+                figsize=(2.3 * per_row * per_item, 2.75 * rows), squeeze=False,
+            )
             for ax in axes.ravel():
                 ax.axis("off")
             for i, w in enumerate(chunk):
-                ax = axes[i // cols][i % cols]
-                ax.imshow(w.pop("_crop").numpy())
-                ax.set_title(
+                row, col = divmod(i, per_row)
+                crop = w.pop("_crop")
+                heat = w.pop("_cam", None)
+                caption = (
                     f"-> {w['pred_class']}  {w['p_pred']:.2f}\n"
-                    f"p(gt)={w['p_gt']:.2f}  IoU {w['best_iou']:.2f}",
-                    fontsize=7, color="#c62828",
+                    f"p(gt)={w['p_gt']:.2f}  IoU {w['best_iou']:.2f}"
                 )
-                for sp in ax.spines.values():
-                    sp.set_color("#c62828")
-                    sp.set_linewidth(2)
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.axis("on")
+                views = [(crop, caption)]
+                if heat is not None:
+                    views.append((cam_overlay(crop, heat), "grad-cam (predicted class)"))
+                for off, (arr, title) in enumerate(views):
+                    ax = axes[row][per_item * col + off]
+                    ax.imshow(arr)
+                    ax.set_title(title, fontsize=7, color="#c62828")
+                    for sp in ax.spines.values():
+                        sp.set_color("#c62828")
+                        sp.set_linewidth(2)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    ax.axis("on")
             fig.suptitle(
                 f"GT {gt}: {len(items)} misclassified crops"
                 + (f"  (page {page + 1})" if len(items) > per_sheet else ""),
@@ -165,7 +200,10 @@ def main():
     model.eval()
     print(f"weights={cfg.weights} (iter {state.get('iteration')})  mask_dilate={cfg.mask_dilate}")
 
-    wrong, total = collect(model, pipe, device, max_frames=args.frames)
+    cam = None if args.no_gradcam else CropGradCAM(model, layer=args.gradcam_layer)
+    if cam is not None:
+        print(f"grad-cam layer: {cam.layer_name}")
+    wrong, total = collect(model, pipe, device, max_frames=args.frames, cam=cam)
     acc = 1 - len(wrong) / max(total, 1)
     print(f"\n{len(wrong)} wrong / {total} matched crops  top1={acc:.4f}")
 

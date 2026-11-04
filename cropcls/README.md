@@ -32,6 +32,9 @@ unmerged, so registering an architecture would have blocked this work on that me
 | a zero-GT frame returns empty, never throws | such frames exist in this data (e.g. `012676FD8_01-008.hdf5`) and `(K,0).max(1)` raises | `test_zero_gt_frame_returns_empty_instead_of_throwing` |
 | an 8-class checkpoint is **rejected** | nothing would crash: the detector would just emit 8 logits and the class-agnostic premise would break invisibly | `test_multiclass_checkpoint_is_rejected` |
 | predictions are upsampled; GT is **never** downsampled | at fill 0.070 forcep03/04 are filigree and would thin away | `test_predictions_at_lower_resolution_are_upsampled_not_gt_downsampled` |
+| the Grad-CAM input carries `requires_grad` | under `freeze_trunk` every trunk parameter is a non-grad leaf, so nothing in the activation's history requires grad and `autograd.grad` raises. An **unfrozen** trunk works either way, which is what hides it | `test_a_frozen_trunk_still_yields_a_map` |
+| a Grad-CAM pass writes no parameter `.grad`, leaks no hook, and restores the train/eval mode | the model object is shared with the optimizer and the in-training val monitor: a stray `.grad` lands in the next step and a forward left in train mode moves the trunk's BatchNorm stats | `test_the_pass_leaves_no_grads_no_hook_and_the_original_mode` |
+| the Grad-CAM is normalized per crop | the raw peak is of order 1e-3 (1.6e-03 at resnet50 / crop 224), so an unnormalized map renders black and reads as "the model looks nowhere" rather than as a bug. Only the order is stable - at crop 64 the peak is 1.6e-02 - so no fixed constant can stand in for the per-crop max | `test_the_map_covers_the_crop_and_is_normalized` |
 
 ## Traps that cost real time
 
@@ -58,3 +61,18 @@ carries `MODEL.MASK_FORMER` keys that this branch does not register, so the merg
 **GPU contention dominates the timing.** The same detector forward is 629 ms/frame on a
 95%-contended Quadro RTX 6000 and 125 ms/frame on an idle RTX 2080 Ti — a nominally
 slower card. Any timing claim must name the machine and its load.
+
+**The dataset names in `configs/cropcls/*.yaml` are not registered on every host.** Datasets are
+registered under their *folder* name beneath `~/training/images_*`
+(`register_all_hdf5_instances`), so `train_seta_mm` / `val_seta_mm` exist only where the folders
+are named that. On `dbe-cia-sl19-01` the folders are `train_phase1_pool_set_a_mm` and
+`val_set_a_mm` - same 8 classes, same order - so a run there needs
+`train_dataset=... val_dataset=...` overrides. The failure is
+`ValueError: train_seta_mm has no thing_classes`, whose message blames the missing `training/images`
+symlink; with three roots under `~/training/` the real fix is usually
+`export SURGICAL_IMAGES_ROOT=<one of them>` **and** the dataset overrides, not the symlink.
+
+**Grad-CAM is a 7x7 map at `crop_size 224`.** The last feature stage is stride 32, so the heat is
+blobby by construction and a blob reaching past the instrument is upsampling, not evidence that
+the model reads the background. `--gradcam-layer layer3` (`stages.2` on convnext) gives the 14x14
+read.
