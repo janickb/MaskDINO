@@ -301,6 +301,7 @@ class CropPipeline:
                         pred_masks[k],
                         self.cfg.crop_size,
                         box=tight,
+                        pad_frac=self.cfg.pad_frac,
                         photometric=self.photometric,
                         mask_only=self.cfg.mask_only,
                         blackout=self.cfg.blackout,

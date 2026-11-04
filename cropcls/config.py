@@ -7,6 +7,7 @@ run `config.yaml` (merged in `detector.py`), and everything here is classifier-o
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,10 +73,12 @@ class CropClsConfig:
     # Folder of per-class crop directories written by tools/extract_crops.py.
     # Empty = train from the live pipeline instead.
     crop_folder: str = ""
-    # Stored patch is the mask's tight box grown by this many px. Only `mask_close` needs
-    # the border (it needs margin >= mask_dilate); plain dilation is exact at 0, because
-    # every mask pixel is inside its own tight box.
-    margin: int = 0
+    # Crop region = the mask's tight box grown by this fraction of its own width/height on
+    # each side. Unlike `mask_dilate` this widens the field of view and leaves the mask alone,
+    # so the border is real background. Relative rather than pixels because the letterbox puts
+    # every crop on the same canvas; see `pad_box`. For a static folder this is what the LOADER
+    # crops to, bounded above by the `pad_frac` the folder was extracted at.
+    pad_frac: float = 0.10
     # Batch size in CROPS. ims_per_batch counts FRAMES and keeps that meaning.
     crops_per_batch: int = 64
     num_workers: int = 4
@@ -164,6 +167,8 @@ class CropClsConfig:
                 raise FileNotFoundError(f"{label} does not exist: {p}")
         if self.crop_size <= 0:
             raise ValueError(f"crop_size must be positive, got {self.crop_size}")
+        if not 0.0 <= self.pad_frac < 1.0:
+            raise ValueError(f"need 0 <= pad_frac < 1, got {self.pad_frac}")
         if not 0.0 <= self.runner_up_ceiling <= self.iou_floor <= 1.0:
             raise ValueError(
                 "need 0 <= runner_up_ceiling <= iou_floor <= 1, got "
@@ -194,11 +199,34 @@ class CropClsConfig:
         return dataclasses.asdict(self)
 
 
+# Fields that existed in a shipped config and no longer do. `to_dict` is `dataclasses.asdict`,
+# so every `runs/*/config.json` carries whatever fields were live when it was written, and
+# `tools/confidence_metrics.py` and `tools/viz_misclassified.py` re-load those to diagnose a
+# finished run. Dropping a field would therefore make every earlier run unloadable, so a
+# retired name is skipped with a warning while any other unknown key still raises - the typo
+# guard is the point of that check and it keeps working.
+RETIRED_KEYS = frozenset({"margin"})
+
+
 def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> CropClsConfig:
     """Read a YAML file into CropClsConfig. Unknown keys are an error, not ignored."""
     raw = yaml.safe_load(Path(path).read_text()) or {}
     if overrides:
         raw.update(overrides)
+    retired = sorted(RETIRED_KEYS & set(raw))
+    if retired:
+        warnings.warn(
+            f"ignoring retired config key(s) {retired} in {path}. `margin` grew the stored PNG "
+            "and never the crop; `pad_frac` replaces it and does widen the field of view, so a "
+            "run predating the change trained at pad_frac=0.0 whatever its margin said.",
+            stacklevel=2,
+        )
+        if "margin" in raw and "pad_frac" not in raw:
+            # Not the dataclass default. A config written before `pad_frac` existed trained on
+            # the tight box, so inheriting the new 0.10 default would re-diagnose a finished run
+            # with a field of view it never saw - and silently, since nothing here would raise.
+            raw["pad_frac"] = 0.0
+        raw = {k: v for k, v in raw.items() if k not in RETIRED_KEYS}
     known = {f.name for f in dataclasses.fields(CropClsConfig)}
     unknown = set(raw) - known
     if unknown:

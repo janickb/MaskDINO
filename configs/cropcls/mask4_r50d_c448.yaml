@@ -40,6 +40,12 @@ blackout: false
 # that measured +3.5 under blackout: true.
 mask_dilate: 0
 
+# 10% of the box width on each side and of its height on each side. Widens the FIELD OF VIEW
+# and leaves the mask alone, so under blackout: false the border is real background - the
+# pixels the detector's mask clipped. Distinct from mask_dilate, which grows the mask inside
+# the region. The crop folder must be extracted at pad_frac >= this or CropFolder raises.
+pad_frac: 0.10
+
 iou_floor: 0.5
 runner_up_ceiling: 0.2
 

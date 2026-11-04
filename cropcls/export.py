@@ -139,8 +139,20 @@ def evaluate_hungarian(
         img_f = image.float()
         crops, keep_idx = [], []
         for k in range(len(det)):
+            tight = mask_tight_bbox(masks[k])
+            if tight is None:
+                continue
+            # box= is not optional. Without it letterbox_crop falls back to the DILATED tight
+            # box, so this path cropped a wider field of view than training did for the same
+            # mask_dilate - wider by 2*mask_dilate px per axis, and nothing raised; it just
+            # scored a differently-framed crop than the model trained on. Measured over the
+            # 4623 crops in crops/train, mean long-axis ratio: 1.04x at dilate 4, 1.08x at 8,
+            # 1.16x at 16, 1.33x at 32. So it was negligible for the small radii and real for
+            # dilate 32, where 78% of crops were framed >20% wider than in training.
+            # Closing is exempt: close_mask does not grow the outer silhouette, so the dilated
+            # tight box equals the undilated one. Training passes the undilated box; match it.
             out = letterbox_crop(
-                img_f, masks[k], cfg.crop_size,
+                img_f, masks[k], cfg.crop_size, box=tight, pad_frac=cfg.pad_frac,
                 mask_only=cfg.mask_only, blackout=cfg.blackout,
                 dilate=cfg.mask_dilate, close=cfg.mask_close,
             )

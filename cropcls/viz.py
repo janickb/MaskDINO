@@ -82,8 +82,10 @@ def write_contact_sheets(
             continue
         fig, axes = plt.subplots(n, 3, figsize=(9, 3.1 * n), squeeze=False)
         for row in range(n):
-            raw = letterbox_crop(image, pred[row], cfg.crop_size, blackout=False)
-            black = letterbox_crop(image, pred[row], cfg.crop_size, blackout=True)
+            raw = letterbox_crop(image, pred[row], cfg.crop_size, blackout=False,
+                                 pad_frac=cfg.pad_frac)
+            black = letterbox_crop(image, pred[row], cfg.crop_size, blackout=True,
+                                   pad_frac=cfg.pad_frac)
             verdict = a.verdict[row]
             colour = _VERDICT_COLOR.get(verdict, "#424242")
             label = (
