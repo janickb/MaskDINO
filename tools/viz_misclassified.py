@@ -58,6 +58,22 @@ def parse_args():
     return ap.parse_args()
 
 
+def _run_config(run: Path) -> tuple[Path, bool]:
+    """The run's own config, and whether it is an --eval-only record.
+
+    An --eval-only run writes `config_eval.json` and never a `config.json`
+    (train_cropcls.py:188), so insisting on the latter locks this tool out of exactly the
+    directories worth inspecting.
+    """
+    train = run / "config.json"
+    if train.is_file():
+        return train, False
+    ev = run / "config_eval.json"
+    if ev.is_file():
+        return ev, True
+    raise FileNotFoundError(f"{run} has neither config.json nor config_eval.json")
+
+
 @torch.no_grad()
 def collect(model, pipe, device, max_frames=None, cam: CropGradCAM | None = None):
     """Every misclassified crop, with its probabilities and the crop as the model saw it.
@@ -182,8 +198,14 @@ def sheets(wrong, out: Path, per_sheet: int, cols: int = 6) -> list[Path]:
 def main():
     args = parse_args()
     run = Path(args.run)
-    cfg = load_config(run / "config.json")
-    cfg.weights = args.weights or str(run / "model_final.pth")
+    cfg_path, is_eval = _run_config(run)
+    cfg = load_config(cfg_path)
+    # An EVAL record's `weights` is the checkpoint that was actually scored, so it is the right
+    # default. A TRAINING config's `weights` is only the run's starting point - possibly an
+    # earlier phase - and defaulting to that would silently inspect the wrong model, which is
+    # the trap train_cropcls.py:175-186 exists to prevent.
+    fallback = cfg.weights if (is_eval and cfg.weights) else str(run / "model_final.pth")
+    cfg.weights = args.weights or fallback
     out = Path(args.out or run / "misclassified")
     out.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device)
@@ -198,7 +220,8 @@ def main():
     state = torch.load(cfg.weights, map_location="cpu", weights_only=False)
     model.load_state_dict(state["model"])
     model.eval()
-    print(f"weights={cfg.weights} (iter {state.get('iteration')})  mask_dilate={cfg.mask_dilate}")
+    print(f"config={cfg_path.name}  weights={cfg.weights} (iter {state.get('iteration')})  "
+          f"mask_dilate={cfg.mask_dilate} mask_channel={cfg.mask_channel} blackout={cfg.blackout}")
 
     cam = None if args.no_gradcam else CropGradCAM(model, layer=args.gradcam_layer)
     if cam is not None:
