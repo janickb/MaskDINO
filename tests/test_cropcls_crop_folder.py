@@ -244,7 +244,7 @@ def test_written_folder_loads_back(tmp_path):
 def test_stored_crop_is_lossless(tmp_path):
     """PNG round-trip must be exact, or bit-identity to the live path is luck."""
     frame, mask = _frame(0), _fragmented(0)
-    x0, y0, x1, y1 = patch_bbox(mask, 16)
+    x0, y0, x1, y1 = patch_bbox(mask, 0.10)
     p = tmp_path / "c.png"
     save_crop(p, frame[:, y0:y1, x0:x1], mask[y0:y1, x0:x1])
     rgb, m = load_crop(p)

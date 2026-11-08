@@ -26,7 +26,9 @@ train_dataset: train_phase1_pool_set_a_mm
 val_dataset: val_set_a_mm
 
 # Alpha in these PNGs already holds the mask the 4th channel needs, so no re-extraction.
-crop_folder: crops/train
+# Extracted at pad_frac 0.20, which is a CEILING: this trains at the 0.10 below, and the tight
+# control is `pad_frac=0.0` off these same PNGs - frame-matched, no second detector pass.
+crop_folder: crops/train_pad20
 
 augment_frames: false   # detector sees clean frames; augmentation is crop-level
 

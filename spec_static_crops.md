@@ -121,16 +121,22 @@ a different real radius for a large instrument than a small one.
 - [x] **The script's output loads back.** 35 crops from 6 real frames, 100% assignment rate,
       865 ms/frame on `dbe-cia-sl19-01` with 7 of 8 GPUs at 94-100% (so not a clean timing).
       **Verify:** `test_written_folder_loads_back`, `test_write_frame_crops_writes_only_kept_detections`
-- [ ] **Extraction cost and folder size**, naming the machine **and its load**, with frame and
-      crop counts. Reported, not capped. Tight baseline, extracted 2026-10-28 and measured
-      2026-11-04: `crops/train` is 186 MB for 4623 crops from 1024 frames in 769 s. A 10% border
-      is 1.44x the pixels, so ~268 MB - a projection, not a measurement, until a padded folder
-      exists. Note `crops/train` itself can no longer serve as the `pad_frac: 0.0` control: it
-      predates `pad_frac` and `CropFolder` now raises on it, so BOTH arms come from the one new
-      padded extraction. Quota is 3.5 GB free (61440M limit, 57887M used), not the ~14 GB this
-      item claimed before.
-      **Verify:** those figures reported in `cropcls-results.md`, against the padded folder's
-      own `meta.json`.
+- [x] **Extraction cost and folder size**, naming the machine **and its load**, with frame and
+      crop counts. Reported, not capped. Both measured on `dbe-cia-sl19-01`:
+      - tight, `crops/train`, extracted 2026-10-28: 186 MB, 4623 crops, 1024 frames, 769 s
+        (751 ms/frame), load unrecorded.
+      - padded, `crops/train_pad20`, `pad_frac: 0.20`, extracted 2026-11-04: **312 MB**, the
+        same 4623 crops from the same 1024 frames (`frame_digest` 0d90fc4eb1bf matches), 1417 s
+        at **1384 ms/frame with GPUs 5 and 6 at ~100% from another job** - so not a clean
+        timing, and on the pure-PyTorch MultiScaleDeformableAttention fallback either way.
+      312 MB against the 268 MB projected from 1.44x the pixels: PNG compresses a
+      mostly-background border better than pixel count implies, so the projection was 15% high.
+      `min_border_px` is 1 and no crop has a 0 px border. `crops/train` can no longer serve as
+      the `pad_frac: 0.0` control - it predates `pad_frac` and `CropFolder` raises on it - so
+      both arms come from this one extraction. Quota 3.5 GB free (61440M limit, 57887M used),
+      not the ~14 GB this item claimed before.
+      **Verify:** reported in `cropcls-results.md` section 8.1, both folders, with the machine
+      and its load.
 - [ ] **Static training matches live training.** `classaware_f1` from the baseline's own
       `HungarianInstanceEvaluator` (`score_mode=detector`) against a **fresh live arm on the
       same frames** — not the published r2 = 0.8758, which ran on another host with an

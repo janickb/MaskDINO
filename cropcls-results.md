@@ -1,4 +1,4 @@
-# Crop classifier — results (twelve runs)
+# Crop classifier — results
 
 Run 2026-10-10/11 on `dbe-cia-sl23-01` (4x RTX 2080 Ti, GPUs 1–3 idle). All numbers
 from `val_seta_mm`; the baseline is `20261006204751_phase1_training_seta_v1-1` (8-class
@@ -125,6 +125,17 @@ Consistent with their geometry: median area 1421 vs 1469 px, aspect ratio 1.80 v
 
 ## 4. What mattered, ranked (`classaware_f1`, against r2 tight = 0.8758)
 
+> **The plain-dilation rows below are confounded — see section 8.** Until 2026-11-05
+> `cropcls/export.py` passed no `box=`, so the scoring path cropped the *dilated* tight box
+> while training cropped the undilated one: wider by `2 * mask_dilate` px per axis. Measured
+> over the 4623 crops in `crops/train`, the mean long-axis ratio is 1.04x at dilate 4, 1.08x at
+> 8, 1.16x at 16 and 1.33x at 32. The model was therefore scored on a wider framing than it
+> trained on, by an amount that grows with the radius, so the larger radii carried the bigger
+> handicap. `dilate 32 = -6.5` is the row to distrust; `dilate 16 = +4.2` was achieved *despite*
+> the mismatch and is if anything understated. The baseline, both closing rows and the
+> blackout/RGB rows are unaffected: the baseline and those ablations run at `mask_dilate: 0`,
+> and `close_mask` does not grow the outer silhouette, so its tight box is unchanged.
+
 | change | effect | reading |
 |---|---|---|
 | **dilate the mask 16 px** | **+4.2** | largest effect found, by a wide margin |
@@ -248,3 +259,158 @@ table below is transcribed from them and is now the only record of the grouping:
    pair will not fix it. Resolve the pair question first.
 2. **Snapshot the current 1024 frames** to a static directory before any regeneration.
 3. **Nothing is committed** — all `cropcls/` work is untracked on branch 42.
+
+## 8. Crop padding (`pad_frac`), 2026-11-05
+
+`pad_frac` grows the crop region by a fraction of the mask's tight box on each side, per axis.
+Unlike `mask_dilate` it widens the **field of view** and leaves the mask alone, so under
+`blackout: false` the border is real background — the pixels the detector's mask clipped.
+Ground truth for the ask: `requirements_crop_padding.md`. Spec: `spec_static_crops.md` section 3.
+
+### 8.1 The folder
+
+`crops/train_pad20`, extracted at `pad_frac: 0.20`, which is a **ceiling**: the loader crops to
+its own `cfg.pad_frac` within it, so one folder serves every fraction at or below 0.20,
+including the tight control at 0.0. Both measured on `dbe-cia-sl19-01`:
+
+| folder | `pad_frac` | size | crops | frames | time |
+|---|---|---|---|---|---|
+| `crops/train` (old, tight) | — (`margin: 0`) | 186 MB | 4623 | 1024 | 769 s, 751 ms/frame, load unrecorded |
+| `crops/train_pad20` | 0.20 | **312 MB** | 4623 | 1024 | 1417 s, **1384 ms/frame, GPUs 5-6 at ~100% from another job** |
+
+Same `frame_digest` (`0d90fc4eb1bf`) and the same 4623 crops, as expected from a frozen
+detector and an unchanged assignment rule. 312 MB against 268 MB projected from 1.44x the
+pixels — PNG compresses a mostly-background border better than pixel count implies, so scaling
+bytes by area ran 15% high. `min_border_px` is 1; no crop has a 0 px border.
+
+**`crops/train` is no longer loadable** — it predates `pad_frac` and `CropFolder` raises rather
+than defaulting to 0 and training tight under a padded config. The `pad_frac: 0.0` control
+therefore comes off `crops/train_pad20` too. Verified byte-identical first: 16 crops sampled
+across classes, `crops/train`'s PNGs equal `crops/train_pad20` re-tightened to its own alpha,
+and the filename sets match — which is what makes the two pre-existing tight runs valid
+controls instead of needing a fresh pair.
+
+### 8.2 Verdict: 0.10 is nothing; 0.05 on resnet50 is borderline and unresolved
+
+`classaware_f1`, `score_mode=detector`, c224, `blackout: false`, `mask_channel: true`,
+4000 iters, all off `crops/train_pad20`. The `pad_frac: 0.0` rows are controls; the two
+convnext and two resnet50 controls at seeds 0-1 are pre-existing `mask4_*` runs, not re-run.
+
+| trunk | `pad_frac` | seeds | runs | mean | vs 0.0 | arm spread |
+|---|---|---|---|---|---|---|
+| resnet50 | 0.0 | 0,1,2,3 | 0.9140 / 0.9182 / 0.9115 / 0.9224 | 0.9165 | — | **1.09 pt** |
+| resnet50 | 0.05 | 0,1,2,3 | 0.9257 / 0.9215 / 0.9282 / 0.9281 | **0.9259** | **+0.94 pt** | 0.67 pt |
+| resnet50 | 0.10 | 0,1 | 0.9115 / 0.9182 | 0.9149 | −0.17 pt | 0.67 pt |
+| convnext_tiny | 0.0 | 0,1 | 0.9249 / 0.9240 | 0.9245 | — | 0.08 pt |
+| convnext_tiny | 0.05 | 0,1 | 0.9249 / 0.9341 | 0.9295 | +0.50 pt | 0.92 pt |
+| convnext_tiny | 0.10 | 0,1 | 0.9299 / 0.9124 | 0.9211 | −0.33 pt | 1.75 pt |
+
+**0.10 buys nothing on either trunk. 0.05 on resnet50 is borderline: +0.94 pt at p = 0.057,
+4 seeds against 4.** Everything else overlaps its control.
+
+**This number moved twice, and the history matters more than the endpoint.** At 2-vs-2 the
+control was 0.9140/0.9182 and the arm 0.9257/0.9215 — complete separation, +0.75 pt, recorded
+here as "suggestive". Control seeds 2 and 3 then came in at 0.9115 and **0.9224**, widening the
+control from 0.42 pt to 1.09 pt and putting 0.9224 above the arm's 0.9215; that was recorded as
+a retraction, "the effect was a narrow control, not the padding". Arm seeds 2 and 3 then scored
+0.9282 and 0.9281, lifting the mean to 0.9259 and the gap to +0.94 pt, exact two-sided
+permutation **p = 0.0571** on 4 vs 4.
+
+So the retraction was too strong. The honest reading is **borderline and unresolved**: short of
+the 0.05 threshold, one overlapping pair (control max 0.9224 against arm min 0.9215), but a
+consistent direction across all four seeds and the strongest candidate anywhere in this
+investigation. Two more seeds per arm would settle it either way; nothing smaller will.
+The lesson is the one section 5 already records — at 2 seeds per arm, neither a separation nor
+an overlap is evidence.
+
+**n=2 cannot estimate its own spread, and this is the demonstration.** The convnext controls
+look reassuringly tight at 0.08 pt, but convnext `pad_frac=0.10` spans 1.75 pt on the same two
+seeds. A 0.08 pt spread is not evidence of low variance; it is one draw. Treat anything under
+~1.1 pt at c224 as noise, which is wider than the 0.82 pt this file records in section 5.
+
+**Both trunks agree on the direction at 0.10**: −0.17 pt and −0.33 pt, consistent with the
+resolution trade — the silhouette drops from 100% to 83% of the canvas edge — but inside noise
+either way.
+
+Best single number in the table is convnext `pad_frac=0.05` seed 1 at 0.9341. It is one seed,
+and its sibling scored 0.9249, exactly the control. Do not quote it.
+
+`classagnostic_f1` is 0.9808 on all 14 runs, identical to four decimals. The detector is frozen
+and `score_mode=detector` keeps scores classifier-independent, so localization cannot move and
+only class assignment can. It is the check that the eval isolates classification.
+
+Crop top-1 ranked the resnet50 arms in a different order than `classaware_f1` did, as usual.
+
+### 8.3 Per class: one candidate, not significant, and not the one that matters
+
+The evaluator emits no per-class F1 or precision — `misclassified_per_class` is keyed by **GT**
+class, so it cannot give precision. These numbers come from
+`inference_detector/instance_matching_confusion.csv` (GT rows, predicted columns, plus a
+false-negative column and false-positive row), which does: `TP = M[c][c]`,
+`FN = rowsum - TP`, `FP = colsum - TP`.
+
+Pooled across both trunks: 6 control runs against 8 padded (0.05 and 0.10 together), exact
+two-sided permutation test on the difference of means.
+
+| class | control | padded | delta | control seed spread | p |
+|---|---|---|---|---|---|
+| scarstick01_mm | 0.9452 | 0.9614 | **+1.62 pt** | 2.71 pt | **0.0147** |
+| hammer01_mm | 0.9964 | 0.9908 | −0.56 pt | 0.92 pt | 0.0586 |
+| forcep04_mm | 0.8269 | 0.8339 | +0.70 pt | 4.76 pt | 0.49 |
+| sharpspoon01_mm | 0.9753 | 0.9795 | +0.42 pt | 1.80 pt | 0.34 |
+| forcep03_mm | 0.8151 | 0.8190 | +0.39 pt | 5.83 pt | 0.66 |
+| forcep01_mm | 0.9045 | 0.9078 | +0.33 pt | 4.13 pt | 0.73 |
+| scalpel01_mm | 0.9658 | 0.9638 | −0.20 pt | 1.29 pt | 0.64 |
+| forcep02_mm | 0.9119 | 0.9115 | −0.04 pt | 3.99 pt | 0.97 |
+
+**Per-class noise dwarfs aggregate noise.** The control's own seed spread is 5.83 pt on
+forcep03 and 4.76 on forcep04, against 1.09 pt on aggregate `classaware_f1`. Any per-class
+claim under ~4 pt on the forceps is unreadable at these seed counts.
+
+**scarstick01_mm is the only candidate, and it does not survive correction.** p = 0.0147 is
+nominal; with 8 classes tested the Bonferroni threshold is 0.00625, and the chance of seeing
+something this strong somewhere among 8 classes is about 11%. What makes it more than a lucky
+p-value is that it is consistent in sign in all four trunk x fraction cells (+0.48 to +2.13 pt)
+and 6 of 8 padded runs beat the best of 6 control runs. What makes it less than a result is
+that nothing else moves and the aggregate is null.
+
+**Its mechanism is specific and legible.** The gain is entirely precision — recall was already
+0.9975, i.e. essentially every scarstick is found with or without padding:
+
+| | control | padded | delta |
+|---|---|---|---|
+| precision | 0.8984 | 0.9283 | **+2.99 pt** |
+| recall | 0.9975 | 0.9971 | −0.03 pt |
+| things wrongly called scarstick | 14.8 | 10.1 | **−4.7** |
+
+Broken down, the predictions that stop being called scarstick are `scalpel01` (5.8 -> 4.2),
+`sharpspoon01` (5.8 -> 4.6) and spurious detections matching no GT (1.8 -> 0.2). So padding
+helps the classifier stop calling *other elongated instruments* scarstick. That fits the
+geometry: scarstick is by far the most elongated class (mean aspect **5.33**, next is scalpel at
+3.15 and sharpspoon at 2.78), and surrounding context is what separates a bare thin shaft from
+a blade or a spoon. Note the obvious alternative story is **not** supported — if padding worked
+by recovering clipped instrument, scarstick's silhouette should sit on its tight-box edge more
+than other classes, and it sits there *least* (0.025 of box perimeter, against 0.046-0.055 for
+the forceps).
+
+**The errors move, they do not disappear.** `false_positives_total` (20), `false_negatives_total`
+(26) and `num_mask_matched_total` (1175) are identical to two decimals across all 14 runs, as
+they must be with a frozen detector and `score_mode=detector`. `misclassified_total` goes
+73.83 -> 70.12, a 5% relative reduction worth +0.32 pt of class-aware recall — and a permutation
+test on it gives **p = 0.4376** (control 67-83, padded 56-83). Not a result.
+
+**Padding does not touch the actual problem.** Section 3's finding is the forcep03/forcep04
+collapse, and those two sit at 0.815 and 0.827 F1 — far the worst classes — with deltas of
++0.39 and +0.70 pt against seed spreads of 5.83 and 4.76. Whatever padding does, it does not
+help the pair that is costing the most.
+
+### 8.4 Pending and not done
+
+- resnet50 `pad_frac=0.05` seeds 2 and 3 are training, to make that arm 4-vs-4 against its
+  control. They can only narrow the conclusion above, not reverse the retraction: the control
+  already reaches 0.9224.
+- `pad_frac` untried at c448, where the resolution trade should be cheaper and where convnext
+  scores highest (0.9474/0.9499 tight).
+- The dilation sweep in section 4 should be re-run now that `export.py` frames crops the way
+  training does, since `pad_frac` is a cleaner way to widen the view than dilation was.
+- Nothing is committed.
