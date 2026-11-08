@@ -22,7 +22,69 @@ import torch.nn as nn
 
 from ..config import CropClsConfig
 
-__all__ = ["CropClassifier", "add_mask_input_channel", "build_classifier"]
+__all__ = [
+    "CropClassifier",
+    "add_mask_input_channel",
+    "build_classifier",
+    "first_conv",
+    "set_stem_stride",
+]
+
+
+def first_conv(trunk: nn.Module) -> tuple[str, nn.Conv2d]:
+    """Locate the trunk's input conv via `pretrained_cfg["first_conv"]`.
+
+    `conv1`, `conv1.0`, `stem.0` for resnet50 / resnet50d / convnext_tiny. Never a per-trunk
+    table: that goes stale the first time someone passes a different `trunk=`.
+    """
+    path = getattr(trunk, "pretrained_cfg", {}).get("first_conv")
+    if not isinstance(path, str) or not path:
+        raise ValueError(
+            f"{type(trunk).__name__} declares no pretrained_cfg['first_conv'], so its input "
+            "conv cannot be located"
+        )
+    conv = trunk.get_submodule(path)
+    if not isinstance(conv, nn.Conv2d):
+        raise TypeError(f"first_conv {path!r} is {type(conv).__name__}, not nn.Conv2d")
+    return path, conv
+
+
+def set_stem_stride(trunk: nn.Module, stride: int) -> int:
+    """Re-stride the trunk's input conv, keeping the kernel and its pretrained weights.
+
+    The point is the EARLY reduction, which `output_stride` cannot reach: dilating stage 4
+    moves only the last feature map (7 -> 14 at c224) while conv1/maxpool/stages 1-3 are
+    untouched, whereas halving the stem stride doubles every stage. Measured on convnext_tiny
+    at 224: stem 56 -> 112 and stages 56/28/14/7 -> 112/56/28/14, which is c448's spatial
+    resolution with no upsampling and an identical parameter count.
+
+    Padding moves with it, `ceil((kernel - stride) / 2)`, which is the "same"-padding
+    convention: it holds the stem output at `input / stride`. The floor form `(k - s) // 2`
+    looks equivalent and is not - it is only correct for an EVEN kernel. Measured at 224:
+    convnext_tiny (4x4) agrees either way, but resnet50 (7x7) native is s2/p3 -> 112 while the
+    floor form gives p2 -> 111, and resnet50d (3x3) native is s2/p1 -> 112 against p0 -> 111.
+    So the floor form silently breaks the `stem_stride == native stride is a no-op` guarantee
+    on both resnets, and the checkpoint guard compares effective STRIDES, so it would not catch
+    it. 4x4/s2 still lands on p1 -> 112, which is what the convnext arm needs.
+
+    Only `.stride` and `.padding` change - the kernel keeps its shape, so nothing is resampled
+    or re-tiled and the ImageNet weights stay bit-identical. Returns the effective stride.
+    """
+    _, conv = first_conv(trunk)
+    if stride <= 0:
+        return int(conv.stride[0])
+    k = int(conv.kernel_size[0])
+    if stride > k:
+        raise ValueError(
+            f"stem_stride={stride} exceeds the kernel size {k}: the conv would skip pixels "
+            "entirely, which is a different operation from re-striding it"
+        )
+    if stride == int(conv.stride[0]):
+        return stride            # a stated no-op must not touch padding either
+    pad = (k - stride + 1) // 2  # ceil((k - stride) / 2)
+    conv.stride = (stride, stride)
+    conv.padding = (pad, pad)
+    return stride
 
 
 def add_mask_input_channel(trunk: nn.Module) -> nn.Module:
@@ -39,15 +101,7 @@ def add_mask_input_channel(trunk: nn.Module) -> nn.Module:
     for resnet50 / resnet50d / convnext_tiny - because a per-trunk table goes stale the
     first time someone passes a different `trunk=` on the command line.
     """
-    path = getattr(trunk, "pretrained_cfg", {}).get("first_conv")
-    if not isinstance(path, str) or not path:
-        raise ValueError(
-            f"{type(trunk).__name__} declares no pretrained_cfg['first_conv'], so its input "
-            "conv cannot be located; mask_channel needs a trunk that names one"
-        )
-    old = trunk.get_submodule(path)
-    if not isinstance(old, nn.Conv2d):
-        raise TypeError(f"first_conv {path!r} is {type(old).__name__}, not nn.Conv2d")
+    path, old = first_conv(trunk)
 
     new = nn.Conv2d(
         old.in_channels + 1,
@@ -80,6 +134,7 @@ class CropClassifier(nn.Module):
         pretrained: bool = True,
         freeze_trunk: bool = False,
         mask_channel: bool = False,
+        stem_stride: int = 0,
     ):
         super().__init__()
         # num_classes=0 + global_pool="avg" gives pooled features and no head, so the
@@ -93,6 +148,14 @@ class CropClassifier(nn.Module):
             num_classes=0,
             global_pool="avg",
         )
+        # BEFORE add_mask_input_channel: that rebuilds the conv copying `stride=old.stride`
+        # and `padding=old.padding`, so it inherits these. The reverse order would discard
+        # them and nothing would raise.
+        # Both recorded: `stem_stride` is what this model runs at, `native_stem_stride` is
+        # what the trunk ships with, which is how a checkpoint predating the field is read.
+        self.native_stem_stride = int(first_conv(self.trunk)[1].stride[0])
+        self.stem_stride = set_stem_stride(self.trunk, stem_stride)
+
         if mask_channel:
             # Before the freeze below, so a frozen trunk freezes the new conv too rather
             # than leaving it the one trainable tensor in a "frozen" run.
@@ -145,4 +208,5 @@ def build_classifier(cfg: CropClsConfig, num_classes: int) -> CropClassifier:
         pretrained=cfg.trunk_pretrained,
         freeze_trunk=cfg.freeze_trunk,
         mask_channel=cfg.mask_channel,
+        stem_stride=cfg.stem_stride,
     )

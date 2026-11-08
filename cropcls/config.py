@@ -83,6 +83,14 @@ class CropClsConfig:
     crops_per_batch: int = 64
     num_workers: int = 4
 
+    # Override the stride of the trunk's FIRST conv, 0 = leave the trunk's own. The early
+    # reduction is what destroys thin structure: measured, forcep03/04 have a 0.40-cell median
+    # half-width after convnext_tiny's 4x4/stride-4 patchify at crop_size 224, and they are the
+    # two classes that collapse. Halving it doubles every stage (112/56/28/14 against
+    # 56/28/14/7), which is crop_size 448's spatial resolution without upsampling and at an
+    # identical parameter count. `output_stride` cannot do this - it moves only the last stage.
+    stem_stride: int = 0
+
     # --- crops ---------------------------------------------------------------
     crop_size: int = 224
     # Append the instance mask as a 4th input channel, 0.0/1.0, after normalization - the

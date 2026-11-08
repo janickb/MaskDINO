@@ -414,3 +414,180 @@ help the pair that is costing the most.
 - The dilation sweep in section 4 should be re-run now that `export.py` frames crops the way
   training does, since `pad_frac` is a cleaner way to widen the view than dilation was.
 - Nothing is committed.
+
+## 9. Stem stride, 2026-11-05
+
+`stem_stride` re-strides the trunk's FIRST conv, keeping the kernel and its pretrained weights.
+Ground truth: `requirements_stem_stride.md`. Spec: `spec_stem_stride.md`.
+
+Why this and not `output_stride`: the user's objection, verified. `output_stride=16` changes
+only `layer4` (7 -> 14 at c224) while `conv1`, `maxpool` and stages 1-3 are untouched, whereas
+c448 doubles every one of them. So `output_stride` cannot test the early-detail hypothesis at
+all. On convnext_tiny `stem_stride: 2` turns the 4x4/stride-4 patchify into overlapping
+4x4/stride-2: stages 56/28/14/7 -> 112/56/28/14, which is c448's spatial resolution with **no
+upsampling** and an **identical parameter count**.
+
+### 9.1 It works, and it is the first thing that moves forcep03/04
+
+convnext_tiny, c224, `pad_frac: 0.0`, `blackout: false`, `mask_channel: true`, 4000 iters.
+`classaware_f1`, `score_mode=detector`. Control is the pre-existing tight pair, not re-run.
+
+| arm | n | runs | mean | vs control |
+|---|---|---|---|---|
+| stride 4 (control) | 2 | 0.9240 / 0.9249 | 0.9245 | — |
+| **stride 2** | 2 | **0.9382 / 0.9407** | **0.9395** | **+1.50 pt** |
+| stride 4, c448 (reference) | 2 | 0.9474 / 0.9499 | 0.9487 | +2.42 pt |
+
+**On the p-value: do not quote it.** The exact two-sided permutation test returns 0.3333, which
+is the **floor** at 2-vs-2 (`2 / C(4,2)`), reached whenever the arms separate completely. It is
+the test having no resolution at this seed count, not evidence of absence. What carries the
+claim instead: both arm runs sit above both control runs, the gap is 1.50 pt against a control
+spread of **0.08 pt** and an arm spread of 0.25 pt, and it clears the ~1.1 pt c224 noise floor
+from section 8.2. Two more seeds per arm would make it testable; the spec's own DoD asks for
+that and it is **not yet met**.
+
+### 9.2 Per class, the mechanism's own prediction
+
+The hypothesis was that the early 4x reduction destroys thin structure, so the **thinnest**
+classes should gain most. Half-width is the median distance transform of the silhouette in
+feature-map cells after the stem at c224 (section 8.3 method). Four classes separate completely
+(every arm run above every control run); the other four overlap.
+
+| class | half-width | control | stride 2 | delta | separated | c448 for comparison |
+|---|---|---|---|---|---|---|
+| **forcep04_mm** | 0.41c | 0.8296 | 0.8694 | **+3.98 pt** | yes | +5.51 pt (72%) |
+| **forcep03_mm** | 0.40c | 0.8148 | 0.8534 | **+3.86 pt** | yes | +5.68 pt (68%) |
+| scarstick01_mm | 0.53c | 0.9472 | 0.9756 | +2.84 pt | yes | +4.33 pt (66%) |
+| scalpel01_mm | 1.06c | 0.9660 | 0.9848 | +1.87 pt | yes | +2.03 pt (92%) |
+| forcep02_mm | 0.95c | 0.9236 | 0.9259 | +0.23 pt | no | +1.07 pt (21%) |
+| sharpspoon01_mm | 0.32c | 0.9831 | 0.9848 | +0.17 pt | no | +0.68 pt (25%) |
+| forcep01_mm | 0.79c | 0.9199 | 0.9196 | −0.02 pt | no | +0.99 pt (−3%) |
+| hammer01_mm | 0.88c | 0.9985 | 0.9938 | −0.46 pt | no | −0.15 pt |
+
+**forcep03 and forcep04 are the two largest gains, +3.86 and +3.98 pt, both fully separated.**
+Section 3's collapse pair is the whole problem on this dataset and nothing in sections 4 or 8
+moved it: the dilation sweep, blackout, the mask channel and `pad_frac` all left it at
+0.815/0.827. This is the first intervention that does, and it is the one the geometry predicted.
+
+The prediction is supported but **not cleanly monotone**, and the exceptions are informative
+rather than noise: sharpspoon is the thinnest class of all (0.32c) and gains only +0.17, but it
+starts at 0.9831 with almost no headroom; hammer and scalpel are the two thickest and go −0.46
+and +1.87, so thickness alone does not order the outcome. Read it as "the classes that were
+being destroyed recover", not as a law.
+
+Every per-class gain is smaller than c448's on the same class (the bracketed share), and the
+four separated classes capture 66-92% of it while the four unseparated ones capture 21% or
+less. Consistent with both being the same mechanism, with c448 buying more of it.
+
+**Correction, 2026-11-05:** the c448 column and the aggregate c448 row were first written from
+three runs, 0.9474/0.9499/0.9499. Only **two** convnext c448 runs exist; a glob matched the
+seed-1 directory twice, so seed 1 was double-counted. Corrected here: mean 0.9487 not 0.9491,
++2.42 pt not +2.46, and six of the eight per-class c448 deltas moved (forcep04 +5.51 not +5.18,
+forcep02 +1.07 not +1.53, forcep01 +0.99 not +1.19, hammer01 −0.15 not −0.26, scarstick01 +4.33
+not +4.39, scalpel01 +2.03 not +2.08). The control and stride-2 columns were unaffected.
+
+### 9.3 Cost
+
+Measured on `dbe-cia-sl19-01`, 80 iterations each, one run per Quadro RTX 6000. The two ran
+**concurrently on GPUs 2 and 3**, not sequentially, with two eval passes also on the box — so
+they share a measurement window, though not a GPU. An earlier 1.14 s/iter figure for the
+control came from a six-way-contended run and was discarded as not comparable.
+
+| | s/iter (iter 80/80) | parameters |
+|---|---|---|
+| stride 4 | 0.22 | 27,827,816 |
+| stride 2 | 0.47 | 27,827,816 |
+
+**~2.1x the time at an identical parameter count**, so this is a compute change, not a capacity
+change — which matters because `cropcls-results.md` section 4 records resnet18-vs-resnet50 at
+only −2.2 points, i.e. capacity was never the binding constraint.
+
+Against c448's **+2.42 pt**, stride 2 buys **62% of the gain** (+1.50 of +2.42), and 66-92% of
+it per class on the four classes that separate. What the extra cost *ratio* is cannot be stated:
+no matched-condition c448 timing exists in this repo, so the earlier "roughly 4x, about 45% of
+the extra cost" was an unmeasured assertion and is withdrawn. Measuring c448 the same way is
+cheap and not yet done.
+
+**Corrections, 2026-11-05.** Two numbers here were wrong when first written. The s/iter figures
+were quoted as 0.29 and 0.52, which are the **iteration-40** cumulative-average lines read while
+the runs were still going, not the final figures above; the profiler's own TOTAL/calls averages
+are 0.205 and 0.456, so the ratio is stable at ~2.1-2.2x but the absolute numbers were not the
+run's own. The memory figures, 8,962 MiB and 16,268 MiB, came from a **single `nvidia-smi`
+snapshot taken ~20 s after launch** — before the stride-4 run had logged its first 20
+iterations — so they are an early sample, not a peak, and are withheld pending a
+`torch.cuda.max_memory_allocated` read. The ~1.8x memory ratio quoted from them should not be
+relied on.
+
+### 9.4 What this does and does not settle
+
+- **Not settled: significance.** Two seeds per arm, and the permutation floor at 2-vs-2 is
+  p = 0.333. The spec requires two seeds minimum and they are met; it also wants a rankable
+  gap, and that needs n >= 3 per arm.
+- **Not settled: peak memory**, and the c448 cost it would be compared against. Both withdrawn
+  above rather than estimated.
+- **Open: does it compose with c448?** If the mechanism is the early reduction, `stem_stride: 2`
+  at c448 should give stages 224/112/56/28 and go further still. Untested, and the memory at
+  c224 is already 16 GB, so c448 at stride 2 may not fit at `crops_per_batch: 64`.
+- **Open: `stem_stride: 2` with `pad_frac: 0.05`.** Both now look positive and they are
+  independent mechanisms (field of view vs sampling density); nothing says they add.
+- **Untested on the resnets by design** — the ask was convnext only. The code is trunk-agnostic
+  and `ceil((k - stride) / 2)` was verified to reproduce native padding on resnet50 and
+  resnet50d, so those arms are launchable without further code.
+
+## 10. What has been tested, and what is now stale
+
+Inventory taken 2026-11-05: **70 run directories**, 57 carrying a Hungarian eval. All use a
+static crop folder; no surviving run trains from the live pipeline.
+
+### 10.1 Test families
+
+| family | what it varied | state |
+|---|---|---|
+| dilation sweep | `mask_dilate` 3/4/8/16/32/64, c224 and c448 | **confounded**, see 10.2 |
+| closing | `mask_close` at radius 3 and 16 | **runs gone**, see 10.2 |
+| blackout | `blackout` true/false, 45 runs at false | live |
+| mask channel | `mask_channel` 4th input channel, the `mask4_*` family | live |
+| trunk | resnet50 / resnet50d / convnext_tiny, `.a1_in1k` and `.fb_in1k` pinned | live |
+| crop size | 224 vs 448 | live |
+| crop padding | `pad_frac` 0.0 / 0.05 / 0.10, sections 8.1-8.3 | live |
+| stem stride | `stem_stride` 2 vs native 4, convnext only, section 9 | live |
+| freeze trunk | 1 run | live |
+| forcep03/04 subset | `crops/train_f0304`, 7 runs | never comparable, see 10.2 |
+
+### 10.2 Stale, and why
+
+- **The 9 plain-dilation runs are confounded.** Until 2026-11-05 `cropcls/export.py` passed no
+  `box=`, so scoring cropped the *dilated* tight box while training cropped the undilated one -
+  wider by `2 * mask_dilate` px per axis, a mean long-axis ratio of 1.04x at dilate 4 rising to
+  1.33x at 32. The model was scored on a framing it never trained on, by an amount growing with
+  the radius. Section 4's `dilate 32 = -6.5` is the row to distrust; `dilate 16 = +4.2` was
+  achieved despite the handicap and is if anything understated. Re-running the sweep is the only
+  way to recover those numbers.
+- **Section 4's closing rows (+0.4, -0.2) and its `remove RGB` row (-5.2) have no artifacts
+  left.** All 70 surviving `config.json` files carry `mask_close: false` and `mask_only: false`,
+  and the key is present in every one of them, so this is deletion rather than a missing field.
+  `runs/` is gitignored shared state that other sessions reorganize. Those three numbers are
+  now unverifiable and should be re-run before being quoted again. Closing is separately
+  **not** affected by the export.py confound - `close_mask` does not grow the outer silhouette,
+  so its tight box is unchanged.
+- **The 2 batch-24 c448 runs are not comparable to the other 68.** `crops_per_batch` is 24
+  against 64 everywhere else, because c448 with `stem_stride: 2` OOMs at 64, 48 and 32 (23,590
+  of 24,576 MiB at 64). They are matched to each other at 256,008 crops seen, so the
+  stride-2-vs-stride-4 contrast inside the pair is valid; the absolute numbers are not
+  comparable to the 0.9487 c448 winner.
+- **The 46 runs on `crops/train` keep their results but cannot be re-run.** That folder predates
+  `pad_frac` and `CropFolder` now raises on it. The results stand because `crops/train` was
+  verified byte-identical to `crops/train_pad20` re-tightened to its own alpha; reproduction
+  needs the new folder plus `pad_frac=0.0`.
+- **The 7 `crops/train_f0304` runs were never comparable** - a 2-class subset, so their
+  `classaware_f1` is not on the 8-class scale.
+- **The 40 `detector_x_class` evals are not the ranking metric.** `score_mode=detector` is
+  (section 5); 53 runs have one.
+
+### 10.3 Not stale
+
+Everything at `mask_dilate: 0`, `crops_per_batch: 64`, scored `score_mode=detector`: the
+`mask4_*` mask-channel family, the trunk and crop-size comparisons, the `pad_frac` arms of
+section 8, and the `stem_stride` arms of section 9. That is the set the section 9.1 ranking is
+drawn from, and the current leader within it is convnext_tiny c448 at **0.9487** (n=2).
+

@@ -249,8 +249,24 @@ def main():
     )
     if cfg.weights:
         state = torch.load(cfg.weights, map_location="cpu", weights_only=False)
+        # The stem stride is a Conv2d ATTRIBUTE, not a parameter: a stride-2 and a stride-4
+        # trunk have identical state_dict keys and identical tensor shapes, so load_state_dict
+        # accepts the wrong one without error and then runs a 7x7 feature map where the weights
+        # expect 14x14. mask_channel is caught only because its conv changes shape and torch
+        # raises; nothing would raise here. Compare the EFFECTIVE stride, since stem_stride 0
+        # and 4 are the same convnext_tiny. A checkpoint with no recorded stride predates the
+        # field, which means the trunk's native stride - what every earlier run trained at.
+        ckpt_stride = state.get("stem_stride", model.native_stem_stride)
+        if ckpt_stride != model.stem_stride:
+            raise ValueError(
+                f"{cfg.weights} was trained with a first-conv stride of {ckpt_stride} but this "
+                f"model is built with {model.stem_stride}. The weights would load silently and "
+                "run at the wrong feature-map resolution. Set stem_stride to match, or point "
+                "weights= at a checkpoint from a run with this stride."
+            )
         model.load_state_dict(state["model"])
-        logger.info("loaded weights from %s (iter %s)", cfg.weights, state.get("iteration"))
+        logger.info("loaded weights from %s (iter %s, stem_stride %s)",
+                    cfg.weights, state.get("iteration"), ckpt_stride)
 
     if args.eval_only and args.hungarian:
         from cropcls.export import evaluate_hungarian
@@ -368,9 +384,11 @@ def main():
             logger.info("iter %6d  val_top1=%.4f  val_loss=%.4f", it, m["val_top1"], m["val_loss"])
             _log_eval(writer, m, it)
         if cfg.checkpoint_period and it % cfg.checkpoint_period == 0:
-            torch.save({"model": model.state_dict(), "iteration": it}, out / f"model_{it:07d}.pth")
+            torch.save({"model": model.state_dict(), "iteration": it,
+                        "stem_stride": model.stem_stride}, out / f"model_{it:07d}.pth")
 
-    torch.save({"model": model.state_dict(), "iteration": cfg.max_iter}, out / "model_final.pth")
+    torch.save({"model": model.state_dict(), "iteration": cfg.max_iter,
+                "stem_stride": model.stem_stride}, out / "model_final.pth")
     m = evaluate(model, get_val_pipe(), device, max_frames=args.val_frames)
     logger.info("FINAL val_top1=%.4f val_loss=%.4f  (8-class MaskDINO baseline: 0.9722)", m["val_top1"], m["val_loss"])
     # The headline comparison is at matched total crops seen, not matched max_iter: the live
