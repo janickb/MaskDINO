@@ -35,7 +35,7 @@ def test_tight_bbox_of_empty_mask_is_none():
 
 def test_output_is_square_and_requested_size():
     img, m = _frame(), _rect_mask(512, 512, 100, 300, 150, 250)
-    crop, crop_mask = letterbox_crop(img, m, SIZE)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE)
     assert crop.shape == (3, SIZE, SIZE)
     assert crop_mask.shape == (SIZE, SIZE)
 
@@ -43,7 +43,7 @@ def test_output_is_square_and_requested_size():
 def test_aspect_ratio_preserved_not_skewed():
     # a 40 x 400 instance: 10:1. After letterboxing the mask must still be 10:1.
     img, m = _frame(512, 512), _rect_mask(512, 512, 50, 450, 100, 140)
-    crop, crop_mask = letterbox_crop(img, m, SIZE)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE)
     box = mask_tight_bbox(crop_mask)
     x0, y0, x1, y1 = box
     h, w = y1 - y0, x1 - x0
@@ -54,14 +54,14 @@ def test_aspect_ratio_preserved_not_skewed():
 
 def test_background_is_exactly_zero():
     img, m = _frame(value=200.0), _rect_mask(512, 512, 100, 300, 150, 250)
-    crop, crop_mask = letterbox_crop(img, m, SIZE)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE)
     assert torch.all(crop[:, ~crop_mask] == 0.0), "background must be exactly 0 after blackout"
     assert crop[:, crop_mask].mean() > 0, "instrument pixels must survive"
 
 
 def test_padding_is_centred_so_rotation_keeps_content_centred():
     img, m = _frame(512, 512), _rect_mask(512, 512, 50, 450, 100, 140)
-    crop, crop_mask = letterbox_crop(img, m, SIZE)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE)
     rot = rotate_k90(crop_mask, 90)
     # a 90-degree rotation of a centred, square canvas keeps the same pixel count
     assert int(crop_mask.sum()) == int(rot.sum())
@@ -78,7 +78,7 @@ def test_empty_mask_is_rejected_not_nan():
 
 def test_single_pixel_mask_does_not_crash():
     img, m = _frame(64, 64), _rect_mask(64, 64, 10, 11, 10, 11)
-    crop, crop_mask = letterbox_crop(img, m, SIZE)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE)
     assert crop.shape == (3, SIZE, SIZE)
     assert torch.isfinite(crop).all()
     assert int(crop_mask.sum()) > 0
@@ -86,7 +86,7 @@ def test_single_pixel_mask_does_not_crash():
 
 def test_rotations_are_lossless_permutations():
     img, m = _frame(512, 512), _rect_mask(512, 512, 50, 450, 100, 140)
-    crop, _ = letterbox_crop(img, m, SIZE)
+    crop, _, _ = letterbox_crop(img, m, SIZE)
     assert torch.equal(rotate_k90(crop, 0), crop)
     assert torch.equal(rotate_k90(crop, 360), crop)
     # four 90s return to the original, exactly - no interpolation anywhere
@@ -161,10 +161,10 @@ def test_dilate_clamps_at_the_frame_edge():
 
 def test_dilated_crop_keeps_background_exactly_zero_outside_the_grown_mask():
     img, m = _frame(256, 256, 200.0), _rect_mask(256, 256, 60, 160, 70, 170)
-    crop, crop_mask = letterbox_crop(img, m, SIZE, dilate=3)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE, dilate=3)
     assert torch.all(crop[:, ~crop_mask] == 0.0)
     # the grown mask admits strictly more pixels than the tight one
-    tight_crop, tight_mask = letterbox_crop(img, m, SIZE, dilate=0)
+    tight_crop, tight_mask, _ = letterbox_crop(img, m, SIZE, dilate=0)
     assert int(crop_mask.sum()) > 0 and int(tight_mask.sum()) > 0
 
 
@@ -205,8 +205,8 @@ def test_letterbox_close_matches_the_standalone_op():
     m = torch.zeros((256, 256), dtype=torch.bool)
     m[100:110, 60:120] = True
     m[100:110, 125:180] = True
-    _, got = letterbox_crop(img, m, SIZE, dilate=4, close=True)
-    _, ref = letterbox_crop(img, close_mask(m, 4), SIZE, dilate=0)
+    _, got, _ = letterbox_crop(img, m, SIZE, dilate=4, close=True)
+    _, ref, _ = letterbox_crop(img, close_mask(m, 4), SIZE, dilate=0)
     assert torch.equal(got, ref), "the crop-first fast path must be exact for closing too"
 
 
@@ -234,16 +234,16 @@ def test_a_passed_box_overrides_the_dilated_box():
     mask = _fragmented_mask()
     tight = mask_tight_bbox(mask)
 
-    passed, _ = letterbox_crop(img, mask, SIZE, box=tight, dilate=12)
-    computed, _ = letterbox_crop(img, mask, SIZE, box=None, dilate=12)
+    passed, _, _ = letterbox_crop(img, mask, SIZE, box=tight, dilate=12)
+    computed, _, _ = letterbox_crop(img, mask, SIZE, box=None, dilate=12)
     assert not torch.equal(passed, computed), (
         "box=tight and box=None agree under dilation; the passed box is being ignored"
     )
 
     # With no dilation the two boxes coincide, so the override is invisible - which is why
     # the dilate>0 case above is the one that can fail.
-    a, _ = letterbox_crop(img, mask, SIZE, box=tight, dilate=0)
-    b, _ = letterbox_crop(img, mask, SIZE, box=None, dilate=0)
+    a, _, _ = letterbox_crop(img, mask, SIZE, box=tight, dilate=0)
+    b, _, _ = letterbox_crop(img, mask, SIZE, box=None, dilate=0)
     assert torch.equal(a, b)
 
 

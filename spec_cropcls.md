@@ -205,7 +205,7 @@ tools/extract_crops.py  writes the static crop folder, one forward per frame
 train_cropcls.py        own training loop, --eval-only, --viz-only
 configs/cropcls/phase1_seta.yaml
 configs/cropcls/mask4_{r50,r50d,cxt}_c{224,448}.yaml   # Step 10 arms
-tests/test_cropcls_{assign,augment,classes,config,crop_folder,crops,detector,eval_cfg,mask_channel}.py
+tests/test_cropcls_{assign,augment,classes,config,crop_folder,crops,detector,eval_cfg,mask_channel,occluder_channel}.py
 
 No `metrics.py`: top-1 lives in `train_cropcls.evaluate`, the timing table in
 `data.StageTimer`. No `test_cropcls_timing.py` either - see step 5.
@@ -342,6 +342,111 @@ No `metrics.py`: top-1 lives in `train_cropcls.evaluate`, the timing table in
       trunk, crop size and channel count. Seed variance on `classaware_f1` is 0.82 points
       (`cropcls-results.md` section 5), so a gap under ~1.6 points is not rankable - report it as
       unresolved, not as a result.
+
+- [ ] **Step 11 - occluder-channel arm** (`requirements_occlusion_channel.md`). One extra input
+      channel holding the union of the OTHER predicted instance masks in the same frame, so the
+      trunk can tell a silhouette that is cut by another tool from one that ends in free space.
+
+      **Why, measured.** Instability under label-preserving perturbation (`tools/augment_probe.py`,
+      1024 val frames, 24 in-distribution variants) is driven by occlusion, not by mask quality.
+      For the fragile forcep03 instances against the stable ones: `overlap_frac` 5.36x,
+      `censored_frac` 2.99x, instances-per-frame 1.33x, while `best_iou` (0.97x), `mask_long`
+      (0.96x) and `det_score` (0.98x) are flat. The model is blind to this today: median `msp` is
+      0.99998 in **every** `censored_frac` band while the error rate moves 1.1% -> 6.7%
+      (`tools/occlusion_stats.py`). And it does not leak class on the pairs that matter -
+      forcep03-vs-forcep04 from `censored_frac` alone is AUROC 0.4973, forcep01/02 0.4893 - so
+      the channel is a censoring cue here and not a class shortcut. Re-check that leak on any new
+      scene set before trusting a gain.
+
+      **Design.** `occluder_channel: bool = False`. Base is `blackout: false mask_channel: true`,
+      so the layout is ch0-2 RGB, ch3 own instance, **ch4 occluder union**, and `in_chans` becomes
+      `3 + mask_channel + occluder_channel`. Both extra channels are 0.0/1.0 appended after
+      normalization, for the reason `to_model_input` already records: the 0-255 RGB statistics
+      mean nothing for an occupancy channel. Rotation stays a single `rotate_k90` over all
+      channels, so the occluder cannot drift out of alignment with the pixels it describes.
+
+      **The crop region must be shared, not just the append.** `letterbox_crop` currently takes
+      one `mask` and returns `(crop, crop_mask)`; it gains an optional `others` mask and returns
+      `(crop, crop_mask, crop_others)`, with `crop_others` carried through the **same** `box`,
+      `pad_frac`, uniform scale and centering as the RGB. Appending a separately-cropped raster
+      would misalign it with the pixels it describes, and that failure is silent - `to_model_input`
+      already records why ("the training path and the scoring path disagreeing about the channel
+      layout does not raise - it just reports a worse number"). `to_model_input` takes the tuple
+      rather than loose tensors for the same reason it already does: so a crop cannot be paired
+      with some other instance's masks.
+
+      **Four call sites change together**, and missing any one is silent:
+      `cropcls/data.py` (live), `cropcls/crop_folder.py` (static), **`cropcls/export.py`** - the
+      Hungarian scoring path that produces the `classaware_f1` this step is ranked by, whose
+      `to_model_input` call at `export.py:162` passes only `mask_channel=` today - and
+      `cropcls/modeling/classifier.py` (the first-conv rebuild). `cropcls/README.md` records
+      "all three crop paths emit the same channel layout" as a tested invariant; the test must
+      extend to the new channel or the invariant is no longer enforced.
+
+      **Not a third value in ch3.** `{background 0, mine 1, occluder 0.5}` was the user's first
+      suggestion and is rejected: a conv is linear in channel values, so every filter would
+      respond to an occluder at exactly half its response to the instance, asserting a false
+      ordinal relation between three categorical labels. Worse, after the trunk's 32x
+      downsampling a half-dense region of the OWN mask averages to the same 0.5, making the
+      encoding ambiguous under the very pooling it must survive. Two binary channels have no
+      such collision.
+
+      **`add_mask_input_channel` generalizes to n channels**, keeping the zero-init: at iteration
+      0 the 5-channel model must be numerically the 4-channel one, or the arm measures a
+      perturbed trunk rather than the channel. Same `pretrained_cfg["first_conv"]` lookup, never
+      `timm.create_model(in_chans=5)`.
+
+      **`validate()` gains two guards**, both raising rather than warning, as the existing
+      `mask_channel` pair does (the cost of noticing at iteration 4000 is the whole run):
+      `occluder_channel` with `freeze_trunk` - the new input weights start at zero and freezing
+      pins them there, so the channel is a literal no-op; and `occluder_channel` **without**
+      `mask_channel` - under `in_chans = 3 + mask_channel + occluder_channel` that silently
+      yields a 4-channel model whose channel 3 is the occluder union with the instance's own
+      mask never fed at all, which is not the arm anyone asked for and which the layout
+      "ch0-2 RGB, ch3 own instance, ch4 occluder union" does not describe.
+
+      **Static folder needs re-extraction and a version guard.** The stored PNG is RGB + alpha
+      and the occluder union is not recoverable from it, so `crops/` must be re-extracted with a
+      second single-channel raster per crop. `meta.json` gains a field recording that the folder
+      carries occluders, and a folder without it must **raise** - a missing raster silently read
+      as zeros turns this arm into its own control and the run reports a worse number with no
+      error (the hazard `to_model_input` already warns about for channel layout). The new folder
+      must be extracted at `pad_frac >= 0.10`, the value both arms train at, since `CropFolder`
+      treats the extraction `pad_frac` as a ceiling and raises below it.
+
+      **Pin `pad_frac`.** An occluder lying over the instance is inside the crop regardless, but
+      an adjacent one reaches it only through the padded rim, so the channel's usefulness is a
+      function of `pad_frac` and the two are entangled variables otherwise.
+
+      **Control: a fresh run, NOT `runs/20261103122513_mask4_cxt_c448`.** That run resolves to
+      `pad_frac: 0.0` off `crops/train` (its `config.json` carries `margin: 0` and no `pad_frac`,
+      which `load_config` maps to 0.0), while `configs/cropcls/mask4_cxt_c448.yaml` now trains at
+      `pad_frac: 0.10` off `crops/train_pad20`. Using it would move `pad_frac` AND the crop folder
+      alongside the channel - three variables, and the 0.9474 it scored is not a baseline for this
+      config. Launch both arms from the same config, `occluder_channel=true/false`, each with
+      **its own `output_dir=`** - the Step 10 discipline, for the reason recorded there (one
+      shared `output_dir` already cost two renames).
+
+      **Out of scope for Step 11:** the soft-target loss. The user chose channel-alone first.
+      Record the expectation up front so a null result is not read as a surprise: under hard-label
+      cross-entropy the network is told its evidence is censored while still being required to
+      emit a one-hot answer, so it gains one more feature to be confident with rather than a
+      reason to hedge. If Step 11 comes back inside seed noise, that is the predicted outcome and
+      the follow-up is the loss, not a bigger channel.
+
+      **Rank by `classaware_f1`** from `HungarianInstanceEvaluator` with `score_mode=detector`, at
+      the run's own `val_stride: 4` (the 8-class baseline protocol, 1201 GT). Seed variance is
+      0.82 points, so a gap below ~1.6 points is not rankable at one seed per arm. Crop top-1 is
+      a monitor only.
+
+      **Verify** - `tests/test_cropcls_occluder_channel.py` (new),
+      `tests/test_cropcls_crops.py`, `tests/test_cropcls_crop_folder.py`: the 5-channel model is
+      bit-identical to the 4-channel one at init and one
+      optimizer step moves the ch4 weights off zero; ch4 takes only {0.0, 1.0} and equals
+      `rotate_k90(occluder_mask, deg)` for each of 0/90/180/270; ch4 is zero for an instance
+      alone in its frame and non-zero for one with a neighbour overlapping its crop;
+      folder-vs-live bit identity holds with the channel on; a `crops/` folder lacking the
+      occluder raster raises rather than yielding zeros.
 
 **Out of scope (explicit):** phase 2 / set B, COCO AP as a headline metric (argmax cannot hedge
 the way `instance_inference`'s `topk(100)` does), any modification to `maskdino/` or `train_net.py`. The owner made a change to register_hdf5_instance.py, in order to register the dataset correctly, this change is approved. (That change has since been superseded by `maskdino/data/datasets/images_root.py`, which resolves the images root from `$SURGICAL_IMAGES_ROOT` or a single `~/training/images_*` match; same approval, same carve-out.)

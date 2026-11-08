@@ -137,6 +137,10 @@ def evaluate_hungarian(
 
         masks = det.masks.cpu()
         img_f = image.float()
+        # Same occluder union as the live path. This is the path that produces classaware_f1,
+        # so a channel layout that disagrees with training here does not raise - it just
+        # reports a worse number (to_model_input's own warning).
+        occ_all = masks.any(0) if cfg.occluder_channel else None
         crops, keep_idx = [], []
         for k in range(len(det)):
             tight = mask_tight_bbox(masks[k])
@@ -152,7 +156,9 @@ def evaluate_hungarian(
             # Closing is exempt: close_mask does not grow the outer silhouette, so the dilated
             # tight box equals the undilated one. Training passes the undilated box; match it.
             out = letterbox_crop(
-                img_f, masks[k], cfg.crop_size, box=tight, pad_frac=cfg.pad_frac,
+                img_f, masks[k], cfg.crop_size,
+                box=tight, pad_frac=cfg.pad_frac,
+                others=(occ_all & ~masks[k]) if occ_all is not None else None,
                 mask_only=cfg.mask_only, blackout=cfg.blackout,
                 dilate=cfg.mask_dilate, close=cfg.mask_close,
             )
@@ -160,7 +166,8 @@ def evaluate_hungarian(
                 continue
             crops.append(
                 to_model_input(out, cfg.pixel_mean, cfg.pixel_std,
-                               mask_channel=cfg.mask_channel)
+                               mask_channel=cfg.mask_channel,
+                               occluder_channel=cfg.occluder_channel)
             )
             keep_idx.append(k)
 

@@ -291,16 +291,21 @@ class CropPipeline:
                 counts[v] += n
 
             image = m["image"].float()
+            # Union of every OTHER prediction in this frame, built once per frame and
+            # subtracted per instance - O(K) instead of the O(K^2) a per-instance loop costs.
+            occ_all = pred_masks.any(0) if self.cfg.occluder_channel else None
             with t("crop"):
                 for k in torch.where(a.keep)[0].tolist():
                     tight = mask_tight_bbox(pred_masks[k])
                     if tight is None:
                         continue
+                    others = (occ_all & ~pred_masks[k]) if occ_all is not None else None
                     out = letterbox_crop(
                         image,
                         pred_masks[k],
                         self.cfg.crop_size,
                         box=tight,
+                        others=others,
                         pad_frac=self.cfg.pad_frac,
                         photometric=self.photometric,
                         mask_only=self.cfg.mask_only,
@@ -315,7 +320,7 @@ class CropPipeline:
                         crops.append(
                             to_model_input(
                                 out, self.cfg.pixel_mean, self.cfg.pixel_std,
-                                deg, self.cfg.mask_channel,
+                                deg, self.cfg.mask_channel, self.cfg.occluder_channel,
                             )
                         )
                         labels.append(label)

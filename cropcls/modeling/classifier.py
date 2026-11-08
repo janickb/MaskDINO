@@ -87,8 +87,8 @@ def set_stem_stride(trunk: nn.Module, stride: int) -> int:
     return stride
 
 
-def add_mask_input_channel(trunk: nn.Module) -> nn.Module:
-    """Give the trunk's first conv one extra, ZERO-initialized input channel.
+def add_mask_input_channel(trunk: nn.Module, n: int = 1) -> nn.Module:
+    """Give the trunk's first conv `n` extra, ZERO-initialized input channels.
 
     NOT `timm.create_model(in_chans=4)`. That routes the pretrained weights through
     `adapt_input_conv` (timm/models/_manipulate.py), which tiles the RGB kernels to
@@ -104,7 +104,7 @@ def add_mask_input_channel(trunk: nn.Module) -> nn.Module:
     path, old = first_conv(trunk)
 
     new = nn.Conv2d(
-        old.in_channels + 1,
+        old.in_channels + n,
         old.out_channels,
         kernel_size=old.kernel_size,
         stride=old.stride,
@@ -134,6 +134,7 @@ class CropClassifier(nn.Module):
         pretrained: bool = True,
         freeze_trunk: bool = False,
         mask_channel: bool = False,
+        occluder_channel: bool = False,
         stem_stride: int = 0,
     ):
         super().__init__()
@@ -156,10 +157,13 @@ class CropClassifier(nn.Module):
         self.native_stem_stride = int(first_conv(self.trunk)[1].stride[0])
         self.stem_stride = set_stem_stride(self.trunk, stem_stride)
 
-        if mask_channel:
+        extra = int(mask_channel) + int(occluder_channel)
+        if extra:
             # Before the freeze below, so a frozen trunk freezes the new conv too rather
-            # than leaving it the one trainable tensor in a "frozen" run.
-            add_mask_input_channel(self.trunk)
+            # than leaving it the one trainable tensor in a "frozen" run. One rebuild for
+            # both channels: two successive rebuilds would copy the first new channel's
+            # zeros forward correctly but double the surgery for no reason.
+            add_mask_input_channel(self.trunk, extra)
         self.feature_dim = int(self.trunk.num_features)
         self.head = nn.Linear(self.feature_dim, num_classes)
         nn.init.trunc_normal_(self.head.weight, std=0.01)
@@ -208,5 +212,6 @@ def build_classifier(cfg: CropClsConfig, num_classes: int) -> CropClassifier:
         pretrained=cfg.trunk_pretrained,
         freeze_trunk=cfg.freeze_trunk,
         mask_channel=cfg.mask_channel,
+        occluder_channel=cfg.occluder_channel,
         stem_stride=cfg.stem_stride,
     )

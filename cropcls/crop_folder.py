@@ -72,20 +72,53 @@ def unclipped_border(
     return min(b) if b else None
 
 
-def save_crop(path: Path, rgb: torch.Tensor, mask: torch.Tensor) -> None:
-    """(3,h,w) uint8 + (h,w) bool -> RGBA PNG. Lossless; a float frame would quantize."""
+def occ_path(path: Path) -> Path:
+    """Sidecar holding the occluder union for `path`. RGBA has no free channel left - alpha
+    is already the instance mask - so the second raster is its own 1-bit file."""
+    return path.with_suffix(".occ.png")
+
+
+def save_crop(
+    path: Path, rgb: torch.Tensor, mask: torch.Tensor, others: torch.Tensor | None = None
+) -> None:
+    """(3,h,w) uint8 + (h,w) bool -> RGBA PNG. Lossless; a float frame would quantize.
+
+    `others` (the union of the OTHER instances over the same patch) is written beside it as
+    a grayscale sidecar, not squeezed into the RGBA.
+    """
     if rgb.dtype != torch.uint8:
         raise TypeError(f"expected uint8 RGB, got {rgb.dtype}: PNG would quantize it")
     a = mask.numpy().astype(np.uint8) * 255
     Image.fromarray(np.dstack([rgb.permute(1, 2, 0).numpy(), a]), "RGBA").save(
         path, optimize=True
     )
+    if others is not None:
+        Image.fromarray(others.numpy().astype(np.uint8) * 255, "L").save(
+            occ_path(path), optimize=True
+        )
 
 
-def load_crop(path: Path) -> tuple[torch.Tensor, torch.Tensor]:
+def load_crop(
+    path: Path, want_others: bool = False
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Fixed 3-arity, third element None unless `want_others`. See `letterbox_crop` for why
+    the None matters: a silently-zero occluder channel turns the arm into its own control."""
     arr = np.array(Image.open(path).convert("RGBA"))
     rgb = torch.from_numpy(arr[..., :3].copy()).permute(2, 0, 1)
-    return rgb, torch.from_numpy(arr[..., 3].copy()) > 127
+    mask = torch.from_numpy(arr[..., 3].copy()) > 127
+    others = None
+    if want_others:
+        op = occ_path(path)
+        if not op.is_file():
+            raise FileNotFoundError(
+                f"{op} is missing, so this crop has no occluder raster. The folder predates "
+                "occluder extraction; re-run tools/extract_crops.py. Defaulting to zeros "
+                "would make an occluder_channel run numerically its own control."
+            )
+        others = torch.from_numpy(np.array(Image.open(op).convert("L")).copy()) > 127
+        if others.shape != mask.shape:
+            raise ValueError(f"{op} is {tuple(others.shape)}, patch is {tuple(mask.shape)}")
+    return rgb, mask, others
 
 
 def write_frame_crops(
@@ -96,6 +129,7 @@ def write_frame_crops(
     asg,
     class_names: list[str],
     pad_frac: float,
+    occluders: torch.Tensor | None = None,
 ) -> list[dict]:
     """Write one frame's kept crops into `out/<class>/`. Returns a row per DETECTION.
 
@@ -124,7 +158,12 @@ def write_frame_crops(
                 cls = class_names[int(asg.labels[k])]
                 (out / cls).mkdir(parents=True, exist_ok=True)
                 rel = f"{cls}/{stem}_p{k:03d}.png"
-                save_crop(out / rel, image[:, y0:y1, x0:x1], masks[k][y0:y1, x0:x1])
+                # Every OTHER instance over this patch. Built from the frame-level union so
+                # the stored raster matches what the live path computes for the same crop.
+                oth = None
+                if occluders is not None:
+                    oth = (occluders & ~masks[k])[y0:y1, x0:x1]
+                save_crop(out / rel, image[:, y0:y1, x0:x1], masks[k][y0:y1, x0:x1], oth)
                 row["class_name"], row["crop"] = cls, rel
         rows.append(row)
     return rows
@@ -166,6 +205,13 @@ class CropFolder(torch.utils.data.Dataset):
         self.meta = json.loads(meta_path.read_text())
         self.class_names = list(self.meta["thing_classes"])
         idx = {n: i for i, n in enumerate(self.class_names)}
+        if cfg.occluder_channel and not self.meta.get("occluders", False):
+            raise ValueError(
+                f"{meta_path} does not record occluders, so this folder was extracted before "
+                "the occluder raster existed. Re-run tools/extract_crops.py. Reading it anyway "
+                "would feed a constant-zero channel 4 and silently turn the arm into its own "
+                "control (spec_cropcls.md Step 11)."
+            )
         unknown = sorted(d.name for d in dirs if d.name not in idx)
         if unknown:
             raise ValueError(
@@ -252,7 +298,7 @@ class CropFolder(torch.utils.data.Dataset):
 
     def __getitem__(self, i: int):
         path, label = self.items[i]
-        rgb, mask = load_crop(path)
+        rgb, mask, others = load_crop(path, want_others=self.cfg.occluder_channel)
         cfg = self.cfg
         tight = mask_tight_bbox(mask)
         if tight is None:
@@ -264,6 +310,7 @@ class CropFolder(torch.utils.data.Dataset):
         # cfg.pad_frac above the stored one has to raise rather than silently crop short.
         out = letterbox_crop(
             rgb.float(), mask, cfg.crop_size, box=tight, pad_frac=cfg.pad_frac,
+            others=others,
             photometric=self.photometric, mask_only=cfg.mask_only, blackout=cfg.blackout,
             dilate=cfg.mask_dilate, close=cfg.mask_close,
         )
@@ -271,7 +318,8 @@ class CropFolder(torch.utils.data.Dataset):
             raise ValueError(f"{path} produced no crop; re-extract")
         deg = self.rotations[int(torch.randint(len(self.rotations), (), generator=self.g))]
         return to_model_input(
-            out, cfg.pixel_mean, cfg.pixel_std, deg, cfg.mask_channel
+            out, cfg.pixel_mean, cfg.pixel_std, deg, cfg.mask_channel,
+            cfg.occluder_channel,
         ), label
 
 

@@ -14,7 +14,9 @@ changing a mask setting means re-running this rather than storing every variant.
 only through the current directory, and a script's sys.path[0] is its own directory. Without
 it every tool here dies on `import maskdino`.
 
-Writes `<out>/<class_name>/<frame>_p<k>.png` (RGBA, alpha is the mask), plus meta.json and
+Writes `<out>/<class_name>/<frame>_p<k>.png` (RGBA, alpha is the mask), a
+`<frame>_p<k>.occ.png` sidecar holding the union of the OTHER instances over the same patch,
+plus meta.json and
 crops.csv. The stored patch is the mask's tight box grown by `pad_frac` per axis, and it is a
 CEILING: the loader crops to its own `cfg.pad_frac` within it, so extracting at 0.20 and
 training at 0.10 costs disk and buys the sweep, including the tight control at 0.0. Only detections passing the assignment rule get a crop; the rest appear in the CSV
@@ -108,7 +110,13 @@ for name, frame_i in frames:
         )
     stems.add(stem)
 
-    frame_rows = write_frame_crops(out, stem, image, pred, asg, class_names, cfg.pad_frac)
+    # Frame-level union of every prediction; write_frame_crops subtracts each instance's own
+    # mask from it. Always written, regardless of cfg.occluder_channel: the folder is the
+    # expensive artifact and an extraction without it cannot be used by an occluder arm at all.
+    frame_rows = write_frame_crops(
+        out, stem, image, pred, asg, class_names, cfg.pad_frac,
+        occluders=pred.any(0) if len(pred) else None,
+    )
     n_crop += sum(1 for r in frame_rows if r["crop"])
     rows += frame_rows
 
@@ -139,6 +147,8 @@ basenames = sorted(os.path.basename(n) for n, _ in frames)
     "detector_checkpoint": os.path.realpath(cfg.detector_checkpoint),
     "detector_score_thresh": cfg.detector_score_thresh,
     "pad_frac": cfg.pad_frac,
+    # CropFolder raises on an occluder_channel run if this is absent or false.
+    "occluders": True,
     "min_border_px": min_border,
     "iou_floor": cfg.iou_floor,
     "runner_up_ceiling": cfg.runner_up_ceiling,

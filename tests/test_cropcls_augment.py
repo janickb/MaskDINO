@@ -43,7 +43,7 @@ def test_photometric_runs_before_blackout_so_background_is_still_zero():
     the background off zero. Running it pre-blackout, then masking, cannot.
     """
     img, m = _frame(), _mask(256, 256, 50, 150, 60, 160)
-    crop, crop_mask = letterbox_crop(
+    crop, crop_mask, _ = letterbox_crop(
         img, m, SIZE, photometric=PhotometricJitter(generator=torch.Generator().manual_seed(1))
     )
     assert torch.all(crop[:, ~crop_mask] == 0.0)
@@ -52,7 +52,7 @@ def test_photometric_runs_before_blackout_so_background_is_still_zero():
 
 def test_mask_only_is_a_silhouette_and_carries_no_rgb():
     img, m = _frame(v=200.0), _mask(256, 256, 50, 150, 60, 160)
-    crop, crop_mask = letterbox_crop(img, m, SIZE, mask_only=True)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE, mask_only=True)
     vals = crop[:, crop_mask].unique()
     assert vals.numel() == 1 and float(vals[0]) == 255.0, "inside the mask must be constant"
     assert torch.all(crop[:, ~crop_mask] == 0.0)
@@ -63,6 +63,6 @@ def test_mask_only_is_a_silhouette_and_carries_no_rgb():
 def test_tight_box_is_used_without_jitter():
     img, m = _frame(), _mask(256, 256, 50, 150, 60, 160)
     box = mask_tight_bbox(m)
-    crop, crop_mask = letterbox_crop(img, m, SIZE, box=box)
+    crop, crop_mask, _ = letterbox_crop(img, m, SIZE, box=box)
     assert int(crop_mask.sum()) > 0
     assert torch.all(crop[:, ~crop_mask] == 0.0)

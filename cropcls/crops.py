@@ -115,7 +115,8 @@ def letterbox_crop(
     pad_frac: float = 0.0,
     photometric=None,
     mask_only: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor] | None:
+    others: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None] | None:
     """Crop to the mask's bbox, black out the background, uniform-scale and pad to square.
 
     Args:
@@ -144,13 +145,22 @@ def letterbox_crop(
             pre-blackout - contrast blends toward the crop mean, and on a ~95%-black crop
             that mean is near zero, so post-blackout it would behave nothing like the
             frame-level op it replaces.
+        others: (H, W) bool union of the OTHER instances' masks in this frame, carried
+            through the SAME box, pad_frac, scale and centering as the RGB so it cannot
+            misalign with the pixels it describes. Never blacked out, dilated or closed -
+            `blackout`/`dilate`/`close` repair the instance's own silhouette and have no
+            meaning for a neighbour's. None when the caller has no occluders to supply.
         mask_only: return the silhouette (255 inside the mask, 0 outside) instead of RGB.
             The shape-only ablation: if it scores near the RGB model, the task is shape
             matching and the RGB channels are carrying little.
 
     Returns:
-        (crop, crop_mask) where crop is (3, size, size) and crop_mask is (size, size) bool,
-        or None if the mask is empty or its bbox is degenerate.
+        (crop, crop_mask, crop_others) where crop is (3, size, size), crop_mask is
+        (size, size) bool, and crop_others is (size, size) bool or **None when `others` was
+        not supplied**. The arity is fixed so a caller cannot silently unpack the wrong
+        shape; the None is what makes a caller that forgot `others` fail loudly in
+        `to_model_input` instead of training on an all-zero occluder channel.
+        None (the whole result) if the mask is empty or its bbox is degenerate.
 
     Scaling is uniform on the longest axis - never skewed - and the content is centred so
     that `rotate_k90` keeps it centred.
@@ -196,6 +206,7 @@ def letterbox_crop(
 
     img = image[:, y0:y1, x0:x1].float()
     msk = mask[y0:y1, x0:x1].bool()
+    oth = others[y0:y1, x0:x1].bool() if others is not None else None
     if not bool(msk.any()):          # a jittered box can only ever grow, but be safe
         return None
 
@@ -230,6 +241,18 @@ def letterbox_crop(
         .squeeze(0)
         .bool()
     )
+    if oth is not None:
+        oth = (
+            F.interpolate(
+                oth.unsqueeze(0).unsqueeze(0).float(),
+                size=(new_h, new_w),
+                mode="nearest",
+            )
+            .squeeze(0)
+            .squeeze(0)
+            .bool()
+        )
+
     # Re-apply the resized mask so the resize leaves no soft halo outside the silhouette.
     if blackout:
         img = img * msk.unsqueeze(0)
@@ -240,7 +263,11 @@ def letterbox_crop(
     left = (size - new_w) // 2
     crop[:, top : top + new_h, left : left + new_w] = img
     crop_mask[top : top + new_h, left : left + new_w] = msk
-    return crop, crop_mask
+    crop_others = None
+    if oth is not None:
+        crop_others = torch.zeros((size, size), dtype=torch.bool, device=img.device)
+        crop_others[top : top + new_h, left : left + new_w] = oth
+    return crop, crop_mask, crop_others
 
 
 def rotate_k90(x: torch.Tensor, degrees: int) -> torch.Tensor:
@@ -277,6 +304,7 @@ def to_model_input(
     pixel_std: list[float],
     degrees: int = 0,
     mask_channel: bool = False,
+    occluder_channel: bool = False,
 ) -> torch.Tensor:
     """`letterbox_crop`'s output -> the exact tensor the classifier is fed.
 
@@ -294,11 +322,25 @@ def to_model_input(
     photometric jitter for free - that runs inside `letterbox_crop`, on RGB only, and its
     (3,1,1) tensors would not survive a 4-channel input.
 
-    Rotation is applied once, to all channels together, so the mask cannot drift out of
+    Rotation is applied once, to all channels together, so neither mask can drift out of
     alignment with the pixels it describes.
+
+    Channel order is fixed: RGB, then the own-instance mask, then the occluder union. The
+    occluder is last so that turning `occluder_channel` on does not renumber the channel a
+    `mask_channel` checkpoint was trained with.
     """
-    crop, crop_mask = out
+    crop, crop_mask, crop_others = out
     x = normalize_crop(crop, pixel_mean, pixel_std)
     if mask_channel:
         x = torch.cat((x, crop_mask.unsqueeze(0).to(x.dtype)), dim=0)
+    if occluder_channel:
+        if crop_others is None:
+            # letterbox_crop was called without `others`. Appending zeros here would train
+            # and score an occluder channel that is constant 0 - the arm would silently
+            # become its own control and report a worse number with no error. Raise instead.
+            raise ValueError(
+                "occluder_channel=True but letterbox_crop returned crop_others=None, i.e. it "
+                "was called without `others=`. Every crop path must supply the occluder union."
+            )
+        x = torch.cat((x, crop_others.unsqueeze(0).to(x.dtype)), dim=0)
     return rotate_k90(x, degrees)

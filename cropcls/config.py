@@ -96,6 +96,12 @@ class CropClsConfig:
     # Append the instance mask as a 4th input channel, 0.0/1.0, after normalization - the
     # 0-255 RGB statistics mean nothing for an occupancy channel. 
     mask_channel: bool = False
+    # Append the union of the OTHER predicted instances as a 5th channel, same 0.0/1.0. Tells
+    # the trunk whether a silhouette is cut by another tool or ends in free space - a
+    # distinction nothing in the input carries today (spec_cropcls.md Step 11). Predicted
+    # masks, never GT: GT occluders would be a train-only oracle. Always last, so turning it
+    # on does not renumber the channel a mask_channel checkpoint was trained with.
+    occluder_channel: bool = False
     # Lossless pixel permutations on a square canvas; applied after cropping so one
     # detector forward yields 4x the classifier samples (spec section 6, step 5). Live path
     # only - the static cache (spec_static_crops.md) samples one rotation per draw, because
@@ -154,7 +160,7 @@ class CropClsConfig:
         about it surfaces only as a conv shape error on the first batch, so neither side
         derives it independently. Not a dataclass field: `asdict` skips it, keeping
         config.json a record of inputs, and `load_config` keeps rejecting it as a YAML key."""
-        return 3 + int(self.mask_channel)
+        return 3 + int(self.mask_channel) + int(self.occluder_channel)
 
     def __post_init__(self) -> None:
         if not self.detector_config:
@@ -195,6 +201,18 @@ class CropClsConfig:
                 "channel 3 is an affine rescaling of channel 0 (mask*255 normalized to "
                 "~+2.25/-2.12, against 1.0/0.0) and carries no information the trunk "
                 "cannot already read. Pick one."
+            )
+        if self.occluder_channel and not self.mask_channel:
+            raise ValueError(
+                "occluder_channel without mask_channel: in_chans would be 4 with the OCCLUDER "
+                "union at channel 3 and the instance's own mask never fed at all. That is not "
+                "the documented layout (RGB, own mask, occluders) and nobody asked for it."
+            )
+        if self.occluder_channel and self.freeze_trunk:
+            raise ValueError(
+                "occluder_channel with freeze_trunk: the new input weights are initialized to "
+                "zero and freezing pins them there, so the channel is a no-op for the whole "
+                "run and the arm reproduces the 4-channel result exactly."
             )
         if self.mask_channel and self.freeze_trunk:
             raise ValueError(

@@ -247,7 +247,7 @@ def test_stored_crop_is_lossless(tmp_path):
     x0, y0, x1, y1 = patch_bbox(mask, 0.10)
     p = tmp_path / "c.png"
     save_crop(p, frame[:, y0:y1, x0:x1], mask[y0:y1, x0:x1])
-    rgb, m = load_crop(p)
+    rgb, m, _ = load_crop(p)
     assert torch.equal(rgb, frame[:, y0:y1, x0:x1])
     assert torch.equal(m, mask[y0:y1, x0:x1])
 
