@@ -60,3 +60,4 @@ _darcs
 runs/*
 crops
 debug_vis/*
+results_archive/*.tgz
