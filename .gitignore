@@ -58,4 +58,5 @@ _darcs
 /models
 /snippet
 runs/*
+crops/*
 debug_vis/*

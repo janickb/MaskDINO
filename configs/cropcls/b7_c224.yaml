@@ -1,0 +1,74 @@
+# EfficientNet-B7 trunk arm, for the thesis comparison against the cited paper's architecture.
+#
+# NOT a candidate configuration - this exists to report how B7 performs under this pipeline,
+# so every field below except `trunk` is copied from mask4_cxt_c224.yaml verbatim. Diff the two
+# before trusting any comparison: if anything but the trunk and output_dir differs, the number
+# is not a trunk measurement.
+#
+# WHY c224 AND NOT c448. Measured 2026-11-05 on an idle Quadro RTX 6000 (24 GiB, fp16 AMP):
+# B7 at 448 OOMs at crops_per_batch 24 and fits only at 16, against the 64 every existing run
+# used - that would change the batch size and the BatchNorm statistics alongside the trunk. At
+# 224 the full 64 fits (16.6 GiB peak, 382 ms/step, ~0.42 h for 4000 iters), so the trunk is
+# the only thing that moves. A 448 arm needs either gradient accumulation (which train_cropcls
+# does not have) or a matched convnext_tiny bs16 control.
+#
+# WEIGHT TAG IS PINNED ON PURPOSE. The bare name `tf_efficientnet_b7` resolves to
+# `.ns_jft_in1k` - Noisy Student, pseudo-labelled on JFT-300M - which would hand B7 300M extra
+# pretraining images that convnext_tiny and resnet50 never saw, and make the gap a pretraining
+# -data result rather than an architecture one. `.aa_in1k` is the original EfficientNet paper's
+# AutoAugment ImageNet-1k checkpoint. The four available tags are aa_in1k, ra_in1k, ap_in1k
+# (AdvProp) and ns_jft_in1k; whichever is used must be named in the thesis.
+#
+# CAVEAT TO DISCLOSE: base_lr 3e-4 below was chosen for convnext_tiny. Reporting B7 as worse at
+# an LR tuned for another trunk is a weak claim - run one B7 seed at 1e-4 as well before
+# quoting a direction:
+#   PYTHONPATH=. python train_cropcls.py --config configs/cropcls/b7_c224.yaml \
+#       base_lr=0.0001 output_dir=runs/b7_c224_lr1e4_s0
+
+detector_checkpoint: /home/janick.bilang/dev/MaskDINO/runs/20261007130733_single_class_v2/model_final.pth
+detector_score_thresh: 0.5
+
+train_dataset: train_phase1_pool_set_a_mm
+val_dataset: val_set_a_mm
+
+crop_folder: crops/train_pad20
+
+augment_frames: false
+
+crop_size: 224
+rotations: [0, 90, 180, 270]
+
+mask_channel: true
+blackout: false
+mask_dilate: 0
+
+# 0.0, not the 0.10 in mask4_cxt_c224.yaml: the runs this is compared against are the
+# `pad_frac: 0.0` control rows in cropcls-results.md section 8.2 (convnext_tiny 0.9245 over
+# seeds 0-1, resnet50 0.9165 over seeds 0-3). Matching the controls is what makes those
+# existing runs usable here instead of needing a fresh convnext pair.
+pad_frac: 0.0
+
+iou_floor: 0.5
+runner_up_ceiling: 0.2
+
+val_stride: 4
+exclude_truncated: true
+
+trunk: tf_efficientnet_b7.aa_in1k
+trunk_pretrained: true
+freeze_trunk: false
+
+weights: ""
+
+base_lr: 0.0003
+weight_decay: 0.05
+
+max_iter: 4000
+ims_per_batch: 4
+crops_per_batch: 64
+warmup_iters: 250
+checkpoint_period: 1000
+eval_period: 500
+amp: true
+
+output_dir: runs/b7_c224

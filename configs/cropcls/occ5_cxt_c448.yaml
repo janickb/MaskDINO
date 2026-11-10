@@ -1,0 +1,77 @@
+# Occluder-channel arm: the union of the OTHER predicted instances as a 5th input channel.
+# Ground truth: requirements_occlusion_channel.md. DoD: spec_cropcls.md Step 11.
+#
+# ch0-2 RGB, ch3 own instance mask, ch4 occluder union. The trunk's first conv gains TWO
+# zero-initialized input channels in one rebuild, so at iteration 0 this is numerically the
+# 3-channel model and the arm measures the channels, not a perturbed trunk.
+#
+# Why: instability under label-preserving perturbation tracks occlusion, not mask quality -
+# fragile forcep03 instances show overlap_frac 5.36x and censored_frac 2.99x against stable
+# ones, while best_iou (0.97x), mask_long (0.96x) and det_score (0.98x) are flat. The model
+# is blind to it today: median msp is 0.99998 in EVERY censored_frac band while the error rate
+# moves 1.1% -> 6.7%. It does not leak class on the pairs that matter (forcep03-vs-04 from
+# censored_frac alone is AUROC 0.4973).
+#
+# EXPECTED NULL. Under hard-label cross-entropy the net is told its evidence is censored while
+# still required to emit a one-hot answer, so it gains a feature to be confident with rather
+# than a reason to hedge. A result inside the 0.82-point seed noise is the PREDICTED outcome
+# and the follow-up is the soft-target loss, not a bigger channel.
+#
+# THE CONTROL IS NOT A SEPARATE FILE, and it is NOT runs/20261103122513_mask4_cxt_c448 - that
+# run resolves to pad_frac 0.0 off crops/train, so using it would move pad_frac and the crop
+# folder alongside the channel. Launch both from here:
+#   PYTHONPATH=. python train_cropcls.py --config configs/cropcls/occ5_cxt_c448.yaml \
+#       output_dir=runs/occ5_cxt_c448
+#   PYTHONPATH=. python train_cropcls.py --config configs/cropcls/occ5_cxt_c448.yaml \
+#       occluder_channel=false output_dir=runs/ctrl_occ5_cxt_c448
+#
+# crops/train_occ must be re-extracted: the occluder raster is a .occ.png sidecar that
+# crops/train_pad20 does not have, and CropFolder raises rather than feeding zeros.
+#   PYTHONPATH=. python tools/extract_crops.py --config configs/cropcls/occ5_cxt_c448.yaml \
+#       --pad-frac 0.20 --out crops/train_occ
+
+detector_checkpoint: /home/janick.bilang/dev/MaskDINO/runs/20261007130733_single_class_v2/model_final.pth
+detector_score_thresh: 0.5
+
+train_dataset: train_phase1_pool_set_a_mm
+val_dataset: val_set_a_mm
+
+crop_folder: crops/train_occ
+
+augment_frames: false   # detector sees clean frames; augmentation is crop-level
+
+crop_size: 448
+rotations: [0, 90, 180, 270]
+
+mask_channel: true
+# The arm. false = the control; give it its own output_dir.
+occluder_channel: true
+blackout: false
+mask_dilate: 0
+
+pad_frac: 0.10
+
+iou_floor: 0.5
+runner_up_ceiling: 0.2
+
+val_stride: 4
+exclude_truncated: true
+
+trunk: convnext_tiny
+trunk_pretrained: true
+freeze_trunk: false
+
+weights: ""
+
+base_lr: 0.0001
+weight_decay: 0.05
+
+max_iter: 4000
+ims_per_batch: 4
+crops_per_batch: 64
+warmup_iters: 250
+checkpoint_period: 1000
+eval_period: 500
+amp: true
+
+output_dir: runs/occ5_cxt_c448
