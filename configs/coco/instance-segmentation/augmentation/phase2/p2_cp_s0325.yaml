@@ -1,0 +1,50 @@
+_BASE_: ../../Base-Surgical-Phase1.yaml
+# Phase-2 copy-paste finetune of the CLASS-AGNOSTIC segmenter: copy-paste ON, phase-1 sweep winner
+#
+# train_phase2_set_ab_mm is 380 sparse renders, exactly 1 instrument per frame, 16 types
+# (set A's 8 + set B's 8; 200/180 instances, near-balanced). CopyPasteCompositor builds
+# busier composites from them, closing the composition gap to val_set_ab_mm (1-10
+# instances/frame, clustered piles). Paste sources are the TRAIN list itself, wired by
+# train_net.py's hdf5 branch via set_copy_paste_sources().
+#
+# Set B is IN-DOMAIN here by the user's decision: this measures "best segmenter for A+B",
+# NOT generalization to unseen instruments. Do not compare these numbers to the phase-1
+# sweep's as if they were generalization scores.
+#
+# RECLASSIFY_FINETUNE is deliberately NOT set: it freezes everything but class_embed,
+# which would train no mask or box head at all.
+# MIN_VISIBILITY stays at the phase-1 value 0.0 (per the user), NOT the reclassify
+# recipe's 0.5 - the evaluator reuses this field for GT filtering, so changing it would
+# change the GT denominator and break comparability with every phase-1 number. The cost
+# is that near-fully paste-occluded instances remain in the GT as targets.
+# The compositor will log "1 class(es) in the paste pool" - expected for a _singleclass
+# view, not a misconfiguration.
+MODEL:
+  # Phase-1 set-A single-class segmenter, 49999 iters at batch 6 (user-supplied). Shape-
+  # compatible without adaptation: SEM_SEG_HEAD.NUM_CLASSES 1, class_embed (1,256),
+  # label_enc (1,256), R50 / 100 queries / hidden 256 / 9 dec layers / DN seg, and its
+  # stored class_mapping is the same single-class sentinel this config derives
+  # ({0: category_id -1, "surgical-instruments"}). Its config.yaml names the retired
+  # train_seta_mm_singleclass / val_seta_mm_singleclass sets - cosmetic, nothing reads them.
+  # resume_or_load(resume=False) takes the model only, not the stored optimizer state.
+  WEIGHTS: "runs/20261007130733_single_class_v2/model_final.pth"
+DATASETS:
+  TRAIN: ("train_phase2_set_ab_mm_singleclass",)
+  TEST: ("val_set_ab_mm_singleclass",)
+OUTPUT_DIR: "runs/p2_cp_s0325"
+INPUT:
+  MIN_SCALE: 0.3
+  MAX_SCALE: 2.5
+  MIN_VISIBILITY: 0.0
+  COPY_PASTE:
+    ENABLED: True
+    MIN_INSTANCES: 0
+    MAX_INSTANCES: 10
+    MASK_INTERP: ["linear", "bicubic", "lanczos"]
+    BLEND_MODES: ["none", "gaussian_blur_edge", "box_blur"]
+    CLUSTER_PROB: 1.0
+    CLUSTER_RADIUS_FRACTION: 0.25
+    CLUSTER_STRAY_FRACTION: 0.2
+SOLVER:
+  BASE_LR: 0.0001          # 1/3 of the phase-1 LR: this is a finetune of a converged
+                           # segmenter onto a new composition, not a fresh fit
