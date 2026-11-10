@@ -221,6 +221,7 @@ class CropFolder(torch.utils.data.Dataset):
             )
         self.items: list[tuple[Path, int]] = [
             (f, idx[d.name]) for d in dirs for f in sorted(d.glob("*.png"))
+            if not f.name.endswith(".occ.png")
         ]
         if not self.items:
             raise FileNotFoundError(f"{self.root} has class folders but no crops")

@@ -34,7 +34,11 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import random
+
+import numpy as np
 import torch
+from PIL import Image
 
 import maskdino  # noqa: F401  - registers the hdf5 datasets
 from cropcls.assign import assign_gt_classes
@@ -42,6 +46,9 @@ from cropcls.config import load_config
 from cropcls.crop_folder import write_frame_crops
 from cropcls.data import CropPipeline, dataset_class_names
 from cropcls.detector import FrozenSingleClassDetector
+from maskdino.data.dataset_mappers.hdf5_coco_instance_dataset_mapper import (
+    Hdf5CocoInstanceDatasetMapper,
+)
 
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument("--config", required=True)
@@ -56,7 +63,21 @@ ap.add_argument(
          "above what you intend to train at and one folder serves the whole sweep, the tight "
          "control included, with no second detector pass.",
 )
+ap.add_argument(
+    "--copy-paste", type=int, default=0, metavar="K",
+    help="write K composites per frame instead of the clean frame, pasting train instances "
+         "with the detector run's INPUT.COPY_PASTE settings. Pasted instances keep their class "
+         "and occluded GT masks are cut to the visible part, so every instance can yield a crop.",
+)
+ap.add_argument("--seed", type=int, default=0)
+ap.add_argument(
+    "--shard", default=None, metavar="I/N",
+    help="process every N-th frame from I; writes crops_shardI.csv / meta_shardI.json for "
+         "tools/merge_crop_shards.py. Copy-paste extraction is CPU-bound, so shards scale.",
+)
+ap.add_argument("--frames-out", default=None, help="also save each segmented frame as JPEG here")
 a = ap.parse_args()
+shard_i, n_shards = map(int, a.shard.split("/")) if a.shard else (0, 1)
 
 cfg = load_config(a.config)
 if a.pad_frac is not None:
@@ -69,6 +90,21 @@ class_names = dataset_class_names(split)
 
 det = FrozenSingleClassDetector(cfg, device=a.device)
 pipe = CropPipeline(cfg, det, split, is_train=False)
+if a.copy_paste:
+    if a.split != "train":
+        raise SystemExit("--copy-paste is for training crops; val must stay the real dense frames")
+    random.seed(a.seed * 1000 + shard_i)
+    np.random.seed(a.seed * 1000 + shard_i)
+    kw = Hdf5CocoInstanceDatasetMapper.from_config(det.d2_cfg, is_train=True)
+    if not kw["copy_paste_enabled"]:
+        raise SystemExit(f"{cfg.detector_config} has INPUT.COPY_PASTE.ENABLED False")
+    kw["tfm_gens"] = []
+    pipe.mapper = Hdf5CocoInstanceDatasetMapper(**kw)
+    # The multiclass train dicts, so pasted instances carry their real category_id.
+    pipe.mapper.set_copy_paste_sources(pipe.dicts)
+frames_out = Path(a.frames_out) if a.frames_out else None
+if frames_out:
+    frames_out.mkdir(parents=True, exist_ok=True)
 
 # LivePoolDataset.__len__ is a virtual size while __getitem__ maps files[idx % len(files)],
 # so indexing 0..len-1 can hit one frame repeatedly or leave frames unreachable. One forward
@@ -77,6 +113,8 @@ seen: dict[str, int] = {}
 for i in range(len(pipe.dicts)):
     seen.setdefault(pipe.dicts[i]["file_name"], i)
 frames = list(seen.items())[: a.frames]
+frames = frames[shard_i::n_shards]
+suffix = f"_shard{shard_i}" if a.shard else ""
 
 stems: set[str] = set()
 rows: list[dict] = []
@@ -84,7 +122,11 @@ counts: dict[str, int] = {}
 n_crop = 0
 t0 = time.perf_counter()
 
-for name, frame_i in frames:
+jobs = [
+    (name, frame_i, f"{Path(name).stem}_cp{v:02d}" if a.copy_paste else Path(name).stem)
+    for name, frame_i in frames for v in range(max(a.copy_paste, 1))
+]
+for name, frame_i, stem in jobs:
     mapped = pipe.mapper(copy.deepcopy(pipe.dicts[frame_i]))
     inst = mapped.get("instances", None)
     if inst is None or not inst.has("gt_masks"):
@@ -102,7 +144,6 @@ for name, frame_i in frames:
     for v, c in asg.counts().items():
         counts[v] = counts.get(v, 0) + c
 
-    stem = Path(name).stem
     if stem in stems:
         raise SystemExit(
             f"two frames share the basename {stem!r}; crop filenames would collide and "
@@ -118,10 +159,15 @@ for name, frame_i in frames:
         occluders=pred.any(0) if len(pred) else None,
     )
     n_crop += sum(1 for r in frame_rows if r["crop"])
+    if frames_out:
+        rgb = image.permute(1, 2, 0).numpy()
+        if det.d2_cfg.INPUT.FORMAT == "BGR":
+            rgb = rgb[:, :, ::-1]
+        Image.fromarray(np.ascontiguousarray(rgb)).save(frames_out / f"{stem}.jpg", quality=92)
     rows += frame_rows
 
 dt = time.perf_counter() - t0
-with (out / "crops.csv").open("w", newline="") as fh:
+with (out / f"crops{suffix}.csv").open("w", newline="") as fh:
     w = csv.DictWriter(fh, fieldnames=list(rows[0]) if rows else ["frame"])
     w.writeheader()
     w.writerows(rows)
@@ -138,11 +184,18 @@ borders = [r["border_px"] for r in rows if r["border_px"] != ""]
 min_border = min(borders) if borders else None
 
 basenames = sorted(os.path.basename(n) for n, _ in frames)
-(out / "meta.json").write_text(json.dumps({
+(out / f"meta{suffix}.json").write_text(json.dumps({
     "dataset": split,
     "pool_realpath": sorted({os.path.realpath(os.path.dirname(n)) for n, _ in frames}),
     "frame_digest": hashlib.md5("\n".join(basenames).encode()).hexdigest(),
     "n_frames": len(frames),
+    "copy_paste_per_frame": a.copy_paste,
+    "copy_paste_seed": a.seed if a.copy_paste else None,
+    "copy_paste_cfg": (
+        json.loads(json.dumps(det.d2_cfg.INPUT.COPY_PASTE)) if a.copy_paste else None
+    ),
+    "n_composites": len(jobs),
+    "shard": a.shard,
     "thing_classes": class_names,
     "detector_checkpoint": os.path.realpath(cfg.detector_checkpoint),
     "detector_score_thresh": cfg.detector_score_thresh,
@@ -160,8 +213,8 @@ basenames = sorted(os.path.basename(n) for n, _ in frames)
 
 assigned = counts.get("assigned", 0)
 total = sum(v for k, v in counts.items() if k != "no_gt_masks")
-print(f"\n{n_crop} crops from {len(frames)} frames in {dt / 60:.1f} min "
-      f"({1000 * dt / max(len(frames), 1):.0f} ms/frame)")
+print(f"\n{n_crop} crops from {len(jobs)} composites of {len(frames)} frames in {dt / 60:.1f} min "
+      f"({1000 * dt / max(len(jobs), 1):.0f} ms/frame)")
 print(f"assignment rate {assigned}/{total} = {assigned / max(total, 1):.1%}")
 for v, c in sorted(counts.items(), key=lambda kv: -kv[1]):
     print(f"  {v:26s} {c}")
