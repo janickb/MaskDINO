@@ -1,0 +1,17 @@
+_BASE_: ../../Base-Surgical-Phase1.yaml
+# Augmentation sweep arm: base scale, strong photometric dose
+# Only INPUT differs between arms - DATASETS, SOLVER and the recipe are the base's, so
+# the arms are comparable to each other. Validation is val_set_ab_mm collapsed to one
+# class: 8 trained-on set-A instruments plus 8 set-B types never seen in training, so
+# classaware_f1 here reads as "does this randomization dose generalize off set A".
+DATASETS:
+  TRAIN: ("train_phase1_pool_set_a_mm_singleclass",)
+  TEST: ("val_set_ab_mm_singleclass",)
+OUTPUT_DIR: "runs/aug_s_base_p_str"
+INPUT:
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
+  PHOTOMETRIC:
+    BRIGHTNESS: [0.5, 1.5]
+    CONTRAST: [0.5, 1.5]
+    SATURATION: [0.6, 1.4]

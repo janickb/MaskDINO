@@ -5,5 +5,10 @@ _BASE_: Base-Surgical-Phase1.yaml
 # class (class_mapping.derive_single_class_mapping), so NUM_CLASSES -1 -> 1.
 DATASETS:
   TRAIN: ("train_phase1_pool_set_a_mm_singleclass",)
-  TEST: ("val_set_a_mm_singleclass",)
+  TEST: ("val_set_ab_mm_singleclass",)
 OUTPUT_DIR: "runs/single_class_v2_frozen_backbone"
+
+INPUT:
+  MIN_SCALE: 0.5
+  MAX_SCALE: 2.0
+  MIN_VISIBILITY: 0.0

@@ -1,0 +1,64 @@
+_BASE_: Base-Surgical-Phase1.yaml
+# Phase-2 copy-paste finetune of the class-agnostic segmenter onto SET C.
+#
+# train_phase2_set_c_mm-1.0x is 460 sparse renders with exactly 1 instrument per frame,
+# 23 types - scissor_blunt/sharp/sharp_blunt wear variants (nominal..50) plus two
+# screw_driver models - and ZERO name overlap with sets A or B. Collapsed to the single
+# "surgical-instruments" class.
+#
+# COPY_PASTE is mandatory here, not an improvement: the phase-2 set-ab experiment ran this
+# exact comparison. With compositing, f1 0.9752 on the full val set; without it, 0.118,
+# because the model trained on 1-instrument frames emitted 0.79 masks/image against 3.95
+# in the GT. A sparse training set cannot be used against dense scenes uncomposited.
+#
+# Scale 1.0/1.0: frames are already 1024 == IMAGE_SIZE, so ResizeScale/FixedSizeCrop are a
+# lossless no-op and no padding region appears for the photometric augs to recolor. Under
+# copy-paste the set-ab sweep found scale jitter irrelevant (top four arms inside noise)
+# with the widest range mildly penalised, and mask IoU fell monotonically as the range
+# widened - so the no-jitter setting is both the nominal winner and the safe choice. This
+# is the OPPOSITE of phase-1 training, where MAX_SCALE >= 2.5 was worth +6 points.
+#
+# MIN_VISIBILITY stays 0.0 per the user's standing decision: the evaluator reuses this
+# field to filter GT, so changing it would change the denominator and break comparability
+# with every number measured so far. Cost: near-fully paste-occluded instances stay in GT.
+#
+# RECLASSIFY_FINETUNE deliberately unset - it freezes all but class_embed, training no
+# mask or box head.
+MODEL:
+  # The set-ab phase-2 winner (p2_cp_s100, f1 0.9752 on the full 1024-frame val_set_ab),
+  # NOT the phase-1 set-A checkpoint. It already learned dense multi-instance prediction
+  # under copy-paste and covers 16 instrument types, so this run accumulates set C on top
+  # of A+B rather than relearning density from scratch. val_set_ab is kept in DATASETS.TEST
+  # precisely to measure how much of A+B this forgets.
+  WEIGHTS: "runs/20261108124636_p2_cp_s100/model_final.pth"
+DATASETS:
+  TRAIN: ("train_phase2_set_c_mm-1.0x_singleclass",)
+  # val_set_c_mm-1.0x: the real set-C validation set (user-supplied 2026-11-08) - 256 dense
+  # frames, 1165 instances, mean 4.55/frame (range 0-10, 34 empty), and the SAME 23-type
+  # roster as the training set. This is the target metric.
+  # val_set_ab_mm_singleclass is the forgetting monitor, not a target: none of its
+  # instruments are in this run's training data. The starting checkpoint scores
+  # classaware_f1 0.9752 on its full 1024 frames, so the drop here is what finetuning on
+  # set C costs on A+B.
+  TEST: ("val_set_c_mm-1.0x_singleclass", "val_set_ab_mm_singleclass")
+  TEST_SAMPLE_STRIDE: 1   # full stride on both: 256 + 1024 frames per eval tick
+OUTPUT_DIR: "runs/p2_setc_cp"
+INPUT:
+  MIN_SCALE: 1.0
+  MAX_SCALE: 1.0
+  MIN_VISIBILITY: 0.0
+  COPY_PASTE:
+    ENABLED: True
+    MIN_INSTANCES: 0
+    MAX_INSTANCES: 10
+    MASK_INTERP: ["linear", "bicubic", "lanczos"]
+    BLEND_MODES: ["none", "gaussian_blur_edge", "box_blur"]
+    CLUSTER_PROB: 1.0
+    CLUSTER_RADIUS_FRACTION: 0.25
+    CLUSTER_STRAY_FRACTION: 0.2
+SOLVER:
+  BASE_LR: 0.0001          # as the set-ab phase-2 arms: a finetune, not a fresh fit
+  MAX_ITER: 6000
+  CHECKPOINT_PERIOD: 100000   # > MAX_ITER: final checkpoint only, /home quota is ~1 GB free
+TEST:
+  EVAL_PERIOD: 2000        # 1280 frames per tick at ~0.71 s/frame is ~15 min; 3 ticks

@@ -1,0 +1,24 @@
+_BASE_: ../../Base-Surgical-Phase1.yaml
+# Throughput calibration only - NOT an experiment arm. Measures sec/iter, eval wall
+# time and peak VRAM for the phase-1 single-class recipe so the augmentation sweep can
+# be sized. Validation is val_set_ab_mm (set A's 8 instruments + 8 unseen set-B ones),
+# collapsed to one class; TEST_SAMPLE_STRIDE 4 keeps the eval probe cheap - multiply the
+# measured eval time by 4 for the full 1024-frame cost.
+DATASETS:
+  TRAIN: ("train_phase1_pool_set_a_mm_singleclass",)
+  TEST: ("val_set_ab_mm_singleclass",)
+  TEST_SAMPLE_STRIDE: 4
+OUTPUT_DIR: "runs/calib_singleclass_augsweep"
+INPUT:
+  MIN_SCALE: 0.5
+  MAX_SCALE: 2.0
+SOLVER:
+  MAX_ITER: 300
+  CHECKPOINT_PERIOD: 100000   # > MAX_ITER: no periodic checkpoint, quota is at 4.9 GB free
+TEST:
+  EVAL_PERIOD: 200
+MODEL:
+  MaskDINO:
+    TEST:
+      HUNGARIAN_EVAL:
+        PERIOD: 200           # measure the confusion-matrix pass too, not just COCO
