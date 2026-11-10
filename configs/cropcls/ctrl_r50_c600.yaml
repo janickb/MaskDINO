@@ -1,0 +1,79 @@
+# resnet50 at 600x600 — the MATCHED CONTROL for configs/cropcls/b7_c224.yaml's sibling b7_c600.
+#
+# NOT a candidate configuration. Without this row the B7-at-600 arm moves trunk AND resolution
+# AND batch size at once, so it measures nothing. Every field below is copied VERBATIM from
+# b7_c600.yaml except `trunk` and `output_dir` — diff the two before trusting any comparison:
+#
+#   diff <(grep -v '^#' configs/cropcls/b7_c600.yaml) <(grep -v '^#' configs/cropcls/ctrl_r50_c600.yaml)
+#
+# should show exactly those two lines. In particular crops_per_batch stays 8 (B7's OOM limit at
+# 600, not this trunk's) and max_iter stays 32000, which is the 4000x64 = 256k crops the
+# reference runs saw. This trunk would fit a far larger batch; using it would reintroduce the
+# confound this file exists to remove.
+#
+# WEIGHT TAG, AND WHY IT IS NOT THE BARE NAME. Measured 2026-11-08 under timm 1.0.28: bare
+# `convnext_tiny` resolves to `convnext_tiny.in12k_ft_in1k` — pretrained on ImageNet-12k
+# (~12M images) and fine-tuned to in1k. `resnet50.a1_in1k` and `tf_efficientnet_b7.aa_in1k`
+# are ImageNet-1k only, 1.2M images. So the bare name hands convnext_tiny ~10x the pretraining
+# data of the trunks it is being compared against — the same confound b7_c600.yaml's header
+# refuses `ns_jft_in1k` for, running in the opposite direction. Every mask4_cxt_* and
+# ctrl_cxt_* run in cropcls-results.md carries it. `fb_in1k` is the original FAIR ImageNet-1k
+# checkpoint; runs/20261103164511_{ctrl,mask4}_cxtfb_c448 already use it.
+#
+# RESOLUTION IS NOT NEUTRAL, AND THAT IS THE POINT OF THE ROW. 600 is B7's design input
+# (pretrained_cfg input_size (3,600,600)); this trunk's is 224 with a 288 test size, so at 600
+# it runs 2.7x off its pretraining scale. Measured 2026-11-08 with fvcore at 600: convnext_tiny
+# 31.2 GMAC / 18x18 final map, resnet50 29.9 / 19x19, B7 38.3 / 19x19 — compute and feature
+# granularity land within ~25%, which is far better matched than at 224 where B7 runs at 7% of
+# its design resolution. So this grid supports "at 600 px and matched crops seen, trunk X beats
+# Y on this data" and NOT "X is a better architecture than Y".
+#
+# base_lr is the knob this file is run twice over: 3e-4 is the c224 rows' value and 1e-4 the
+# c448 rows'. Neither was tuned for 600 or for B7, so report the per-trunk best of the two and
+# say so, rather than quoting one trunk at another's LR.
+detector_checkpoint: /home/janick.bilang/dev/MaskDINO/runs/20261007130733_single_class_v2/model_final.pth
+detector_score_thresh: 0.5
+
+train_dataset: train_phase1_pool_set_a_mm
+val_dataset: val_set_a_mm
+
+crop_folder: crops/train_pad20
+
+augment_frames: false
+
+crop_size: 600
+rotations: [0, 90, 180, 270]
+
+mask_channel: true
+blackout: false
+mask_dilate: 0
+
+# 0.0 matches the control rows in cropcls-results.md section 8.2 (convnext_tiny 0.9245 over
+# seeds 0-1, resnet50 0.9165 over seeds 0-3), so those existing runs stay usable as reference
+# points - though they are c224 and this is c600, which is what the c600 control above fixes.
+pad_frac: 0.0
+
+iou_floor: 0.5
+runner_up_ceiling: 0.2
+
+val_stride: 4
+exclude_truncated: true
+
+trunk: resnet50.a1_in1k
+trunk_pretrained: true
+freeze_trunk: false
+
+weights: ""
+
+base_lr: 0.0003
+weight_decay: 0.05
+
+max_iter: 32000
+ims_per_batch: 4
+crops_per_batch: 8
+warmup_iters: 2000
+checkpoint_period: 99999
+eval_period: 4000
+amp: true
+
+output_dir: runs/ctrl_r50_c600

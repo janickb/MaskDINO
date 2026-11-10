@@ -1,0 +1,91 @@
+# EfficientNet-B7 at its native 600x600, ImageNet-1k weights, for the thesis comparison
+# against the cited paper's architecture.
+#
+# NOT a candidate configuration for this pipeline - it exists to report how B7 performs when
+# it is given its own design point rather than this repo's crop size.
+#
+# WEIGHT TAG. `.aa_in1k` is the original EfficientNet paper's AutoAugment checkpoint: 1.2M
+# ImageNet-1k images, no extra data. Pinned explicitly because the bare name
+# `tf_efficientnet_b7` resolves to `.ns_jft_in1k` (Noisy Student, pseudo-labelled on JFT-300M),
+# which would give B7 300M pretraining images that convnext_tiny and resnet50 never saw and
+# turn an architecture comparison into a pretraining-data one. Name the tag in the thesis.
+#
+# BATCH 8, NOT 12. Measured 2026-11-05, idle Quadro RTX 6000 (24 GiB, fp16 AMP, synthetic
+# batches): bs16 OOMs, bs12 peaks at 22.6 GiB of 23.46 usable, bs8 at 15.4 GiB. bs12 is 505
+# ms/step and bs8 is 350 ms/step, so per crop they are within 4% of each other - bs12 buys no
+# throughput and would leave 0.9 GiB of headroom on a shared card. bs8 it is.
+#
+# MAX_ITER 32000 IS THE EPOCH MATCH, NOT A LONGER SCHEDULE. The reference runs saw
+# 4000 x 64 = 256k crops; at bs8 that is 32000 iterations. train_cropcls's own closing comment
+# says the headline comparison is at matched total crops seen, not matched max_iter.
+# warmup_iters and eval_period are scaled by the same 8x. ~3.1 h per seed.
+#
+# CHECKPOINT_PERIOD IS DELIBERATELY ABOVE MAX_ITER so only model_final.pth is written. A B7
+# checkpoint is ~243 MiB against convnext_tiny's 106 MiB, and `quota -s` shows 1.4 GiB free of
+# the 61 GiB limit - at the usual checkpoint_period 1000 this run would write 32 of them,
+# 7.8 GiB, and die mid-checkpoint with "Disk quota exceeded". Free space in runs/ before
+# launching more than two seeds.
+#
+# 600 IS MOSTLY UPSAMPLING, AND THAT IS WORTH STATING. Measured over 400 crops of
+# crops/train_pad20, the long edge is median 274 px (p25 202, p90 492); only 4% are already
+# >= 600 px, against 73% already >= 224. So this gives B7 the input size it was designed for,
+# not more real detail. It is still not a neutral knob: section 4's stem_stride finding is that
+# the early reduction is what destroys thin structure, and forcep03/04's 0.40-cell median
+# half-width after a stride-4 patchify at 224 scales with input size - so 600 may help for
+# reasons that have nothing to do with B7 being B7. That is what the matched control separates.
+#
+# THE MATCHED CONTROL - run it, or the comparison moves trunk AND resolution AND batch at once:
+#   PYTHONPATH=. python train_cropcls.py --config configs/cropcls/b7_c600.yaml \
+#       trunk=convnext_tiny output_dir=runs/ctrl_cxt_c600_s0
+# convnext_tiny at 600/bs8 is ~0.8 h per seed, so the control is cheaper than the arm.
+#
+# base_lr 3e-4 is inherited from mask4_cxt_c224.yaml, where it was chosen for convnext_tiny.
+# Reporting B7 as worse at another trunk's LR is a weak claim: run one seed at 1e-4 too
+# (`base_lr=0.0001`) before quoting a direction.
+
+detector_checkpoint: /home/janick.bilang/dev/MaskDINO/runs/20261007130733_single_class_v2/model_final.pth
+detector_score_thresh: 0.5
+
+train_dataset: train_phase1_pool_set_a_mm
+val_dataset: val_set_a_mm
+
+crop_folder: crops/train_pad20
+
+augment_frames: false
+
+crop_size: 600
+rotations: [0, 90, 180, 270]
+
+mask_channel: true
+blackout: false
+mask_dilate: 0
+
+# 0.0 matches the control rows in cropcls-results.md section 8.2 (convnext_tiny 0.9245 over
+# seeds 0-1, resnet50 0.9165 over seeds 0-3), so those existing runs stay usable as reference
+# points - though they are c224 and this is c600, which is what the c600 control above fixes.
+pad_frac: 0.0
+
+iou_floor: 0.5
+runner_up_ceiling: 0.2
+
+val_stride: 4
+exclude_truncated: true
+
+trunk: tf_efficientnet_b7.aa_in1k
+trunk_pretrained: true
+freeze_trunk: false
+
+weights: ""
+
+base_lr: 0.0003
+weight_decay: 0.05
+
+max_iter: 32000
+ims_per_batch: 4
+crops_per_batch: 8
+warmup_iters: 2000
+checkpoint_period: 99999
+eval_period: 4000
+amp: true
+
+output_dir: runs/b7_c600

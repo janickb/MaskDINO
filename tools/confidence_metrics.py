@@ -35,7 +35,7 @@ import torch
 import torch.nn.functional as F
 
 import maskdino  # noqa: F401  - registers the hdf5 datasets
-from cropcls.assign import ASSIGNED, assign_gt_classes
+from cropcls.assign import assign_gt_classes
 from cropcls.config import load_config
 from cropcls.crops import letterbox_crop, mask_tight_bbox, to_model_input
 from cropcls.data import CropPipeline, apply_truncated_filter, apply_val_stride
@@ -300,9 +300,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device)
 
-    n_frames = apply_val_stride(cfg.val_dataset, (cfg.val_stride if args.val_stride is None else args.val_stride))
+    stride = cfg.val_stride if args.val_stride is None else args.val_stride
+    n_frames = apply_val_stride(cfg.val_dataset, stride)
     n_gt = apply_truncated_filter(cfg.val_dataset, cfg.exclude_truncated)
-    print(f"val={cfg.val_dataset} stride={cfg.val_stride} -> {n_frames} frames, {n_gt} GT")
+    print(f"val={cfg.val_dataset} stride={stride} -> {n_frames} frames, {n_gt} GT")
 
     det = FrozenSingleClassDetector(cfg, device=args.device)
     pipe = CropPipeline(cfg, det, cfg.val_dataset, is_train=False)
@@ -358,7 +359,8 @@ def main():
             bl_path = run / name
             break
     if bl_path:
-        baseline = json.load(open(bl_path))
+        with open(bl_path) as f:
+            baseline = json.load(f)
         need = ("num_correct_class_total", "misclassified_total",
                 "false_positives_total", "false_negatives_total")
         if all(k in baseline for k in need):
